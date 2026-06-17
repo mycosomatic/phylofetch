@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Streamlit
+.streamlit/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated outputs (don't commit user data)
+*.fasta
+*.fa
+*.fna
+*.bam
+*.bai
+*.log
+!docs/*.md
+
+# User config / project workspace
+.env

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phylofetch"
+version = "0.1.0"
+description = "Extract phylogenetic loci from fungal genome assemblies and prepare datasets for tree inference"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.28",
+    "biopython>=1.81",
+    "pandas>=2.0",
+    "plotly>=5.0",
+    "numpy>=1.24",
+    "pymsaviz>=0.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov"]
+
+[project.scripts]
+phylofetch = "phylofetch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
