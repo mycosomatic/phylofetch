@@ -92,4 +92,6 @@ from phylofetch.project_manager import RunManager
 
 ## Branch
 
-Active development branch: `claude/zen-cannon-ki2cmp`
+Active development branch: `dev`
+
+All Claude Code sessions should develop on `dev` and open PRs into `main` when ready to merge. Do not create per-session branches.
