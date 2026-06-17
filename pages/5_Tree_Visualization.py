@@ -122,7 +122,7 @@ with tab_iqtree:
 
             with st.spinner("IQ-TREE2 running… (this may take a while)"):
                 res = run_manager.run(
-                    cmd=cmd,
+                    cmd,
                     module="iqtree2",
                     action="ml_tree",
                 )
@@ -133,7 +133,7 @@ with tab_iqtree:
                 if treefile.exists():
                     tree_text = treefile.read_text().strip()
                     st.session_state["newick"] = tree_text
-                    st.session_state["iqtree_log"] = res.stdout or ""
+                    st.session_state["iqtree_log"] = Path(res.stdout_path).read_text()
                     st.markdown("**Newick tree**")
                     st.code(tree_text, language=None)
                     st.download_button(
@@ -145,8 +145,8 @@ with tab_iqtree:
             else:
                 st.error(f"IQ-TREE2 failed (return code {res.returncode}).")
 
-            log_lines = (res.stdout or "") + (res.stderr or "")
-            if log_lines:
+            log_lines = Path(res.stdout_path).read_text() + Path(res.stderr_path).read_text()
+            if log_lines.strip():
                 with st.expander("IQ-TREE2 log"):
                     st.code(log_lines[-8000:], language=None)
 

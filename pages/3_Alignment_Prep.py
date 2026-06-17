@@ -149,7 +149,7 @@ with tab_align:
                 fp = Path(fasta_path)
                 out_fp = out_path / (fp.stem + "_aligned.fasta")
                 extra = mafft_extra.split() if mafft_extra.strip() else None
-                res = run_mafft(
+                rc, stderr = run_mafft(
                     input_fasta=fp,
                     output_fasta=out_fp,
                     mode=mafft_mode,
@@ -158,7 +158,7 @@ with tab_align:
                     extra_args=extra,
                     run_manager=run_manager,
                 )
-                results[fp.name] = res
+                results[fp.name] = (rc, stderr)
                 progress.progress(
                     (i + 1) / len(selected_align),
                     text=f"Aligned {fp.name}",
@@ -171,32 +171,31 @@ with tab_align:
             ]
 
             rows = []
-            for fname, res in results.items():
-                if res.returncode == 0 and Path(res.stdout or "").exists() or True:
-                    out_fp = out_path / (Path(fname).stem + "_aligned.fasta")
-                    n_seq, aln_len, gap_pct = 0, 0, 0.0
-                    if out_fp.exists():
-                        seqs = list(SeqIO.parse(str(out_fp), "fasta"))
-                        n_seq = len(seqs)
-                        if seqs:
-                            aln_len = len(seqs[0].seq)
-                            total_gaps = sum(str(s.seq).count("-") for s in seqs)
-                            total_chars = n_seq * aln_len
-                            gap_pct = (
-                                round(total_gaps / total_chars * 100, 1)
-                                if total_chars
-                                else 0.0
-                            )
-                    rows.append(
-                        {
-                            "Locus": fname,
-                            "Status": "✅" if res.returncode == 0 else "❌",
-                            "Sequences": n_seq,
-                            "Aligned length": aln_len,
-                            "Gap %": gap_pct,
-                            "Output": str(out_fp),
-                        }
-                    )
+            for fname, (rc, _stderr) in results.items():
+                out_fp = out_path / (Path(fname).stem + "_aligned.fasta")
+                n_seq, aln_len, gap_pct = 0, 0, 0.0
+                if out_fp.exists():
+                    seqs = list(SeqIO.parse(str(out_fp), "fasta"))
+                    n_seq = len(seqs)
+                    if seqs:
+                        aln_len = len(seqs[0].seq)
+                        total_gaps = sum(str(s.seq).count("-") for s in seqs)
+                        total_chars = n_seq * aln_len
+                        gap_pct = (
+                            round(total_gaps / total_chars * 100, 1)
+                            if total_chars
+                            else 0.0
+                        )
+                rows.append(
+                    {
+                        "Locus": fname,
+                        "Status": "✅" if rc == 0 else "❌",
+                        "Sequences": n_seq,
+                        "Aligned length": aln_len,
+                        "Gap %": gap_pct,
+                        "Output": str(out_fp),
+                    }
+                )
             st.dataframe(
                 pd.DataFrame(rows), use_container_width=True, hide_index=True
             )
@@ -285,7 +284,7 @@ with tab_trim:
                 fp = Path(fasta_path)
                 stem = fp.stem.replace("_aligned", "")
                 out_fp = out_path / (stem + "_trimmed.fasta")
-                res = run_trimal(
+                rc, stderr = run_trimal(
                     input_fasta=fp,
                     output_fasta=out_fp,
                     mode=trim_mode,
@@ -294,7 +293,7 @@ with tab_trim:
                     trimal_bin=tp.get("trimal", "trimal"),
                     run_manager=run_manager,
                 )
-                results[fp.name] = res
+                results[fp.name] = (rc, stderr)
                 progress.progress(
                     (i + 1) / len(selected_trim),
                     text=f"Trimmed {fp.name}",
@@ -307,7 +306,7 @@ with tab_trim:
             ]
 
             rows = []
-            for fname, res in results.items():
+            for fname, (rc, _stderr) in results.items():
                 stem = Path(fname).stem.replace("_aligned", "")
                 out_fp = out_path / (stem + "_trimmed.fasta")
                 n_seq, aln_len = 0, 0
@@ -319,7 +318,7 @@ with tab_trim:
                 rows.append(
                     {
                         "Locus": fname,
-                        "Status": "✅" if res.returncode == 0 else "❌",
+                        "Status": "✅" if rc == 0 else "❌",
                         "Sequences": n_seq,
                         "Trimmed length": aln_len,
                         "Output": str(out_fp),
@@ -366,18 +365,18 @@ with tab_trim:
                 out_nt = out_path / (fp.stem + "_macse_nt.fasta")
                 out_aa = out_path / (fp.stem + "_macse_aa.fasta")
                 with st.spinner("Running MACSE…"):
-                    res = run_macse(
+                    rc, stderr = run_macse(
                         input_fasta=fp,
                         output_nt=out_nt,
                         output_aa=out_aa,
                         macse_jar=macse_jar,
                         run_manager=run_manager,
                     )
-                if res.returncode == 0:
+                if rc == 0:
                     st.success(f"MACSE complete. NT: `{out_nt}` AA: `{out_aa}`")
                 else:
                     st.error("MACSE failed.")
-                    st.code(res.stderr or "", language=None)
+                    st.code(stderr or "", language=None)
 
     if "trimmed_fastas" in st.session_state:
         st.info(
