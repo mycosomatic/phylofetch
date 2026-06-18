@@ -1,5 +1,38 @@
 # phylofetch — Claude Code Notes
 
+## Working agreement (READ FIRST, EVERY SESSION)
+
+This project is used for **active scientific research**. Everything must be rock-solid,
+transparent, traceable, and repeatable. These rules override default behavior.
+
+**At the start of every session, before making any change:**
+1. Read `PLANNING.md` and `DECISIONS.md` to confirm we are not backtracking on or
+   contradicting a prior decision. If the requested work conflicts with a recorded
+   decision, stop and flag it before proceeding.
+
+**How we work:**
+- **Two branches only.** `main` is the release branch; `dev` is where all work happens.
+  Never create per-session or feature branches unless the user explicitly asks. Open PRs
+  from `dev` into `main`.
+- **Ask often.** The user has basic Python knowledge but intermediate–advanced mycology /
+  fungal genomics knowledge. When intent is unclear, ask rather than assume. Work slowly
+  and carefully.
+- **Explain changes clearly**, including the bioinformatics reasoning, not just the code.
+  Prefer over-explaining tools/concepts to assuming familiarity.
+- **Scientific soundness is non-negotiable.** If a request appears to contradict
+  well-established contemporary knowledge (mycology, genomics, phylogenetics, statistics),
+  do not silently comply — explain the concern and make the user argue for it before
+  proceeding.
+- **Abandoned/unused code** must be documented in `DECISIONS.md` (what, why abandoned).
+  Do not resurrect or delete it without asking first.
+
+**Living documents (append-only; never delete past entries):**
+- `PLANNING.md` — overarching roadmap and goals.
+- `DECISIONS.md` — decision history with rationale and alternatives considered.
+- `CHANGELOG.md` — what actually changed, session by session.
+- When we reverse a past decision, **comment out** the old entry (`<!-- -->`) and add a
+  dated pointer to the new decision that supersedes it. Keep the full history visible.
+
 ## Project overview
 
 phylofetch is a Streamlit-based bioinformatics app for fungal genome assembly processing:
