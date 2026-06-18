@@ -281,8 +281,19 @@ with tab_run:
     col_str, col_loc = st.columns(2)
     with col_str:
         st.markdown("**Assemblies**")
-        all_ids    = list(st.session_state.assemblies.keys())
-        sel_strains = st.multiselect("Strains", all_ids, default=all_ids,
+        all_ids = list(st.session_state.assemblies.keys())
+        if "sel_strains" not in st.session_state:
+            st.session_state["sel_strains"] = all_ids
+        ba, bn, _ = st.columns([1, 1, 3])
+        with ba:
+            if st.button("All", key="btn_strains_all"):
+                st.session_state["sel_strains"] = all_ids
+                st.rerun()
+        with bn:
+            if st.button("None", key="btn_strains_none"):
+                st.session_state["sel_strains"] = []
+                st.rerun()
+        sel_strains = st.multiselect("Strains", all_ids, key="sel_strains",
                                      label_visibility="collapsed")
     with col_loc:
         st.markdown("**Loci**")

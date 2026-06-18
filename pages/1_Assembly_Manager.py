@@ -88,6 +88,17 @@ with tab_add:
                 st.session_state["scan_df"]        = pd.DataFrame(rows)
                 st.session_state["scan_df_source"] = tuple(found)
 
+            # ── Quick filter presets ──
+            qc1, qc2, _ = st.columns([1, 1, 5])
+            with qc1:
+                if st.button("EGAP", key="qf_egap"):
+                    st.session_state["scan_filter"] = "EGAP"
+                    st.rerun()
+            with qc2:
+                if st.button("Clear", key="qf_clear"):
+                    st.session_state["scan_filter"] = ""
+                    st.rerun()
+
             # ── Filter ──
             filter_text = st.text_input(
                 "Filter paths (case-insensitive substring; leave blank for all)",

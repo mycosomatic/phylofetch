@@ -85,12 +85,25 @@ with tab_import:
                 )
             else:
                 st.success(f"Found {len(found_dirs)} run(s).")
+                scan_root = Path(scan_busco_dir)
+                # Names that indicate an intermediate container dir, not the sample dir
+                _skip = {"busco", "compleasm", "qc", "busco_output", "busco_results"}
                 rows = []
                 for rd in sorted(found_dirs):
+                    sample_id = rd.name
+                    cand = rd
+                    for _ in range(4):
+                        cand = cand.parent
+                        if cand == scan_root or not cand.name:
+                            break
+                        if not (cand.name.lower().startswith("run_")
+                                or cand.name.lower() in _skip):
+                            sample_id = cand.name
+                            break
                     rows.append(
                         {
                             "Import?": True,
-                            "Sample ID": rd.parent.name if rd.parent != Path(scan_busco_dir) else rd.name,
+                            "Sample ID": sample_id,
                             "Run directory": str(rd),
                         }
                     )
