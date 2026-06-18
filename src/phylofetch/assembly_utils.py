@@ -4,12 +4,13 @@ assembly_utils.py
 Parse FASTA assemblies from multiple assemblers, extract per-contig stats,
 and compute standard assembly QC metrics (N50, GC%, etc.).
 
-Supported assemblers (auto-detected from contig header format):
+Supported assemblers (auto-detected from contig header format, then filename):
   - SPAdes / metaSPAdes
   - MEGAHIT
   - Flye
   - Hifiasm
   - Velvet
+  - MaSuRCA, ABySS, Canu, EGAP (detected from filename — these re-header output)
   - Generic (falls back gracefully — coverage from header treated as optional)
 """
 
@@ -34,8 +35,44 @@ _PATTERNS = {
 }
 
 
+# Filename markers for assemblers/pipelines that re-header their output so the
+# contig-header patterns above can't see them. Ordered: true assemblers first,
+# then pipelines/polishers (lower priority).
+_FILENAME_MARKERS: list[tuple[str, str]] = [
+    ("spades", "spades"),
+    ("masurca", "masurca"),
+    ("flye", "flye"),
+    ("hifiasm", "hifiasm"),
+    ("megahit", "megahit"),
+    ("abyss", "abyss"),
+    ("canu", "canu"),
+    ("velvet", "velvet"),
+    ("egap", "egap"),
+    ("medaka", "medaka"),
+    ("pilon", "pilon"),
+    ("racon", "racon"),
+    ("polca", "polca"),
+]
+
+
+def _assembler_from_filename(fasta_path: str) -> str:
+    """Infer assembler/pipeline from the filename when headers are uninformative."""
+    name = Path(fasta_path).name.lower()
+    for label, marker in _FILENAME_MARKERS:
+        if marker in name:
+            return label
+    return "unknown"
+
+
 def detect_assembler(fasta_path: str) -> str:
-    """Read the first few headers and infer which assembler produced the FASTA."""
+    """
+    Infer which assembler produced the FASTA.
+
+    Contig headers are authoritative (a polished SPAdes assembly keeps its
+    ``NODE_..`` headers, so it is still reported as ``spades``). When headers
+    are uninformative — e.g. EGAP, MaSuRCA, ABySS which re-header output — fall
+    back to recognising the assembler/pipeline name in the filename.
+    """
     with open(fasta_path) as f:
         headers_checked = 0
         for line in f:
@@ -54,7 +91,7 @@ def detect_assembler(fasta_path: str) -> str:
             headers_checked += 1
             if headers_checked >= 5:
                 break
-    return "unknown"
+    return _assembler_from_filename(fasta_path)
 
 
 def _parse_header_coverage(header: str, assembler: str) -> Optional[float]:
@@ -157,6 +194,64 @@ def suggest_strain_id(fasta_path: str) -> str:
     ]:
         name = name.replace(suffix, "")
     return name
+
+
+# Distinguishing tokens used to disambiguate strain IDs when several assembly
+# versions of one strain collapse to the same suggested ID (e.g. an EGAP final
+# and a polish final for the same strain). Ordered most-specific first.
+_SOURCE_TAGS: list[str] = [
+    "egap", "polish", "best", "consensus",
+    "spades", "masurca", "flye", "hifiasm", "megahit",
+    "abyss", "canu", "velvet", "medaka", "pilon", "racon", "polca",
+    "scaffolds", "contigs",
+]
+
+
+def source_tag_from_filename(fasta_path: str) -> str:
+    """
+    Return a short tag identifying the assembly version/source from a filename,
+    used to disambiguate otherwise-identical suggested strain IDs.
+    Returns "" when no known token is present.
+    """
+    name = Path(fasta_path).name.lower()
+    for tag in _SOURCE_TAGS:
+        if tag in name:
+            return tag
+    return ""
+
+
+def suggest_unique_strain_ids(fasta_paths: list[str]) -> list[str]:
+    """
+    Derive strain IDs for a batch of FASTAs, guaranteeing uniqueness.
+
+    Clean IDs (from ``suggest_strain_id``) are kept when unique. When several
+    files reduce to the same base ID — e.g. ``X_final_EGAP_assembly`` and
+    ``X_final_polish_assembly`` both reducing to ``X`` — *every* member of the
+    colliding group gets a source tag (``X_egap``, ``X_polish``) so none is
+    silently dropped on import. Falls back to the full filename stem, then a
+    numeric suffix, if a tag is unavailable or still ambiguous.
+    """
+    from collections import Counter
+
+    bases = [suggest_strain_id(fp) for fp in fasta_paths]
+    base_counts = Counter(bases)
+
+    ids: list[str] = []
+    seen: set[str] = set()
+    for fp, base in zip(fasta_paths, bases):
+        if base_counts[base] > 1:
+            tag = source_tag_from_filename(fp)
+            sid = f"{base}_{tag}" if tag else Path(fp).stem
+        else:
+            sid = base
+        candidate = sid
+        n = 2
+        while candidate in seen:
+            candidate = f"{sid}_{n}"
+            n += 1
+        seen.add(candidate)
+        ids.append(candidate)
+    return ids
 
 
 # ── QUAST report parsing ─────────────────────────────────────────────────────

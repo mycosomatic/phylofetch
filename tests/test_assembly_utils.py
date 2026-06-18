@@ -12,10 +12,13 @@ from Bio import SeqIO
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from phylofetch.assembly_utils import (
+    detect_assembler,
     find_quast_report,
     get_assembly_stats,
     parse_quast_report,
+    source_tag_from_filename,
     suggest_strain_id,
+    suggest_unique_strain_ids,
 )
 
 
@@ -111,6 +114,87 @@ class TestSuggestStrainId:
         # EGAP final assembly filename → clean strain ID
         sid = suggest_strain_id("/data/NS26-3-C2/NS26-3-C2_final_EGAP_assembly.fasta")
         assert sid == "NS26-3-C2"
+
+
+class TestDetectAssemblerFromFilename:
+    def test_egap_detected_from_filename(self, tmp_path):
+        # EGAP re-headers its output, so headers won't match — filename must win.
+        fp = _write_fasta(
+            tmp_path / "NS27-2B-B3_final_EGAP_assembly.fasta",
+            [("scaffold_1", "ACGT" * 100)],
+        )
+        assert detect_assembler(str(fp)) == "egap"
+
+    def test_masurca_detected_from_filename(self, tmp_path):
+        fp = _write_fasta(
+            tmp_path / "NS26-3-C2_masurca.fasta",
+            [("jcf7180000000001", "ACGT" * 100)],
+        )
+        assert detect_assembler(str(fp)) == "masurca"
+
+    def test_spades_headers_beat_filename(self, tmp_path):
+        # A pilon-polished SPAdes assembly keeps NODE_ headers → still "spades".
+        fp = _write_fasta(
+            tmp_path / "NS26-3-C2_pilon.fasta",
+            [("NODE_1_length_5000_cov_42.1", "ACGT" * 100)],
+        )
+        assert detect_assembler(str(fp)) == "spades"
+
+    def test_unknown_when_no_marker(self, tmp_path):
+        fp = _write_fasta(
+            tmp_path / "mystery.fasta",
+            [("seq1", "ACGT" * 100)],
+        )
+        assert detect_assembler(str(fp)) == "unknown"
+
+
+class TestSourceTagFromFilename:
+    def test_egap_tag(self):
+        assert source_tag_from_filename("/d/X_final_EGAP_assembly.fasta") == "egap"
+
+    def test_polish_tag(self):
+        assert source_tag_from_filename("/d/X_final_polish_assembly.fasta") == "polish"
+
+    def test_no_tag(self):
+        assert source_tag_from_filename("/d/plain_strain.fasta") == ""
+
+
+class TestSuggestUniqueStrainIds:
+    def test_egap_and_polish_do_not_collide(self):
+        # The core bug: both collapse to NS27-2B-B3 → second was dropped on import.
+        files = [
+            "/d/NS27-2B-B3/NS27-2B-B3_final_EGAP_assembly.fasta",
+            "/d/NS27-2B-B3/NS27-2B-B3_final_polish_assembly.fasta",
+        ]
+        ids = suggest_unique_strain_ids(files)
+        assert len(set(ids)) == 2, f"IDs collided: {ids}"
+        assert "NS27-2B-B3_egap" in ids
+        assert "NS27-2B-B3_polish" in ids
+
+    def test_unique_names_kept_clean(self):
+        files = [
+            "/d/NS26-3-C2_spades.fasta",
+            "/d/NS26-3-C2_racon.fasta",
+        ]
+        ids = suggest_unique_strain_ids(files)
+        # These already differ (suffixes not stripped) → kept verbatim, unique
+        assert len(set(ids)) == 2
+        assert ids == ["NS26-3-C2_spades", "NS26-3-C2_racon"]
+
+    def test_all_ids_unique_even_with_triple_collision(self):
+        files = [
+            "/d/S1_final_EGAP_assembly.fasta",
+            "/d/S1_final_polish_assembly.fasta",
+            "/d/S1_best_assembly.fasta",
+        ]
+        ids = suggest_unique_strain_ids(files)
+        assert len(set(ids)) == 3, f"Collision in {ids}"
+
+    def test_count_preserved(self):
+        files = [f"/d/sample_{i}.fasta" for i in range(5)]
+        ids = suggest_unique_strain_ids(files)
+        assert len(ids) == 5
+        assert len(set(ids)) == 5
 
 
 class TestParseQuastReport:

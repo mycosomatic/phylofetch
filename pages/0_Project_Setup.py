@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from phylofetch.assembly_utils import get_assembly_stats, suggest_strain_id
+from phylofetch.assembly_utils import get_assembly_stats, suggest_unique_strain_ids
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR, DEFAULT_PROJECTS_ROOT, RunManager, check_tools,
@@ -187,22 +187,53 @@ with tab_import:
                 st.warning("No FASTA files found.")
             else:
                 st.success(f"Found {len(found_files)} FASTA file(s).")
+                file_strs = [str(fp) for fp in found_files]
+                suggested_ids = suggest_unique_strain_ids(file_strs)
                 rows = []
-                for fp in found_files:
-                    suggested_id = suggest_strain_id(str(fp))
+                for fp, sid in zip(file_strs, suggested_ids):
                     rows.append({
                         "Import?":      True,
-                        "Strain ID":    suggested_id,
-                        "File":         str(fp),
+                        "Strain ID":    sid,
+                        "File":         fp,
                         "BUSCO dir":    "",
                         "QUAST report": "",
                     })
                 st.session_state["scan_rows"] = rows
+                st.session_state["scan_editor_ver"] = \
+                    st.session_state.get("scan_editor_ver", 0) + 1
 
     if "scan_rows" in st.session_state:
+        st.session_state.setdefault("scan_editor_ver", 0)
+
+        n_rows = len(st.session_state["scan_rows"])
+        n_sel = sum(1 for r in st.session_state["scan_rows"] if r.get("Import?"))
+
+        c_all, c_none, c_inv, c_count = st.columns([1, 1, 1, 3])
+        with c_all:
+            if st.button("✅ Select all", key="scan_sel_all", use_container_width=True):
+                for r in st.session_state["scan_rows"]:
+                    r["Import?"] = True
+                st.session_state["scan_editor_ver"] += 1
+                st.rerun()
+        with c_none:
+            if st.button("⬜ Select none", key="scan_sel_none", use_container_width=True):
+                for r in st.session_state["scan_rows"]:
+                    r["Import?"] = False
+                st.session_state["scan_editor_ver"] += 1
+                st.rerun()
+        with c_inv:
+            if st.button("🔄 Invert", key="scan_sel_inv", use_container_width=True):
+                for r in st.session_state["scan_rows"]:
+                    r["Import?"] = not r.get("Import?")
+                st.session_state["scan_editor_ver"] += 1
+                st.rerun()
+        with c_count:
+            st.markdown(f"&nbsp;&nbsp;**{n_sel} / {n_rows}** selected")
+
         edited = st.data_editor(
             pd.DataFrame(st.session_state["scan_rows"]),
             use_container_width=True, hide_index=True,
+            key=f"scan_editor_{st.session_state['scan_editor_ver']}",
             column_config={
                 "Import?":      st.column_config.CheckboxColumn(),
                 "Strain ID":    st.column_config.TextColumn(),
@@ -213,6 +244,8 @@ with tab_import:
                     help="Optional: path to QUAST report.tsv for this sample"),
             },
         )
+        # Persist manual edits so they survive reruns triggered by the buttons.
+        st.session_state["scan_rows"] = edited.to_dict("records")
 
         to_import = edited[edited["Import?"] == True]
         st.write(f"**{len(to_import)}** selected for import")

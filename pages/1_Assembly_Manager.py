@@ -19,7 +19,7 @@ from phylofetch.assembly_utils import (
     find_quast_report,
     get_assembly_stats,
     parse_quast_report,
-    suggest_strain_id,
+    suggest_unique_strain_ids,
 )
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
@@ -106,13 +106,14 @@ with tab_add:
 
             # Build dataframe in session state on first appearance after a scan
             if "scan_df" not in st.session_state or st.session_state.get("scan_df_source") != tuple(found):
+                unique_ids = suggest_unique_strain_ids(list(found))
                 rows = [
                     {
                         "Add?":      True,
-                        "Strain ID": suggest_strain_id(p),
+                        "Strain ID": sid,
                         "Path":      p,
                     }
-                    for p in found
+                    for p, sid in zip(found, unique_ids)
                 ]
                 st.session_state["scan_df"]        = pd.DataFrame(rows)
                 st.session_state["scan_df_source"] = tuple(found)
