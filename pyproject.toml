@@ -25,5 +25,8 @@ phylofetch = "phylofetch.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+phylofetch = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
