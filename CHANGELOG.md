@@ -7,6 +7,12 @@
 
 - Added the working-agreement / session protocol to `CLAUDE.md` (read first every session).
 - Created living documents: `PLANNING.md`, `DECISIONS.md`, `CHANGELOG.md`. (See D-001.)
+- Merged browser/cloud session work (commit `4a03968`) into `dev`: **citable, user-extensible
+  PCR primer library** — packaged `data/primers.json` (14 fully-cited fungal pairs), user
+  library at `~/.phylofetch/primers.json`, edit-distance matching hardening, binding-site
+  disambiguation UI, and RunManager provenance logging. (See D-003.)
+- **PRM-001 data fix:** corrected the corrupted built-in `ACT-512F` primer to its canonical
+  20-nt sequence (Carbone & Kohn 1999), with regression test. (See D-004.)
 
 ## Earlier (from git history, pre-changelog)
 
