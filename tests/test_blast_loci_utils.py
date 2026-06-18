@@ -13,11 +13,46 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+from Bio import SeqIO
+
 from phylofetch.alignment.concat import _shift_partition_spec
 from phylofetch.blast_loci_utils import (
+    min_acceptable_cds_length,
     select_best_locus_group,
     write_codon_partition,
 )
+
+
+# ── CDS-completeness gate (relaxed for PCR amplicons) ──────────────────────
+
+class TestMinAcceptableCdsLength:
+    def _ref(self, tmp_path, *lengths: int) -> str:
+        recs = [SeqRecord(Seq("A" * n), id=f"r{i}", description="")
+                for i, n in enumerate(lengths)]
+        fp = tmp_path / "ref.fasta"
+        SeqIO.write(recs, str(fp), "fasta")
+        return str(fp)
+
+    def test_nucleotide_uses_shortest_ref(self, tmp_path):
+        ref = self._ref(tmp_path, 900, 1200)
+        # shortest = 900, 50% → 450
+        assert min_acceptable_cds_length(ref, "blastn", 50) == 450
+
+    def test_protein_ref_scaled_by_three(self, tmp_path):
+        ref = self._ref(tmp_path, 300)            # 300 aa
+        # 300 aa × 3 × 0.5 = 450 bp
+        assert min_acceptable_cds_length(ref, "tblastn", 50) == 450
+
+    def test_relaxed_pct_lowers_threshold(self, tmp_path):
+        ref = self._ref(tmp_path, 1000)
+        assert min_acceptable_cds_length(ref, "blastn", 10) == 100
+
+    def test_empty_ref_returns_zero(self, tmp_path):
+        fp = tmp_path / "empty.fasta"
+        fp.write_text("")
+        assert min_acceptable_cds_length(str(fp), "blastn", 50) == 0.0
 
 
 # ── LXD-002 regression ────────────────────────────────────────────────────

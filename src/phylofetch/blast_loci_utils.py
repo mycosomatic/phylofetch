@@ -492,6 +492,22 @@ def write_extraction_log(result: dict, output_dir: str,
     return log_path
 
 
+# ── Length acceptability ──────────────────────────────────────────────────────
+
+def min_acceptable_cds_length(reference_fasta: str, blast_type: str,
+                              min_cds_pct_of_ref: float) -> float:
+    """
+    Minimum CDS length (bp) for a hit to count as 'complete enough', based on the
+    shortest reference. tblastn references are in amino acids → ×3 for bp.
+    Returns 0.0 if no references can be read.
+    """
+    ref_lengths = [len(r.seq) for r in SeqIO.parse(reference_fasta, "fasta")]
+    if not ref_lengths:
+        return 0.0
+    scale = 3 if blast_type == "tblastn" else 1
+    return min(ref_lengths) * scale * (min_cds_pct_of_ref / 100)
+
+
 # ── Top-level pipeline ────────────────────────────────────────────────────────
 
 def extract_locus(
@@ -508,10 +524,16 @@ def extract_locus(
     blastn_bin: str = "blastn",
     tblastn_bin: str = "tblastn",
     run_dir: str = "",
+    require_complete_cds: bool = True,
 ) -> tuple[Optional[dict], str]:
     """
     Top-level locus extraction. Returns (result_dict_or_None, status_message).
     Also writes FASTA files, GFF3, codon partition, and extraction log to output_dir.
+
+    require_complete_cds: when True (coding/ortholog strategy), reject hits whose
+    stitched CDS is shorter than ``min_cds_pct_of_ref`` of the reference. Set False
+    for PCR-amplicon references (the usual NCBI nucleotide case), where partial /
+    intron-containing matches are expected and the genomic amplicon output is used.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -550,15 +572,17 @@ def extract_locus(
     if result is None:
         return None, "Sequence extraction failed (contig not found)"
 
-    # Length sanity check
-    ref_lengths = [len(r.seq) for r in SeqIO.parse(reference_fasta, "fasta")]
-    if ref_lengths:
-        scale = 3 if blast_type == "tblastn" else 1
-        min_acceptable = min(ref_lengths) * scale * (min_cds_pct_of_ref / 100)
+    # CDS-completeness gate — only enforced for the coding/ortholog strategy.
+    # PCR-amplicon references (require_complete_cds=False) are expected to be
+    # partial or intron-containing, so the gate is skipped and the genomic
+    # amplicon output is the primary product.
+    if require_complete_cds:
+        min_acceptable = min_acceptable_cds_length(
+            reference_fasta, blast_type, min_cds_pct_of_ref)
         if result["cds_length"] < min_acceptable:
             return None, (
                 f"CDS {result['cds_length']} bp < {min_acceptable:.0f} bp threshold "
-                f"(try lower min identity?)"
+                f"(uncheck 'require complete CDS' for PCR-amplicon refs, or lower min identity)"
             )
 
     ts = _now_utc()

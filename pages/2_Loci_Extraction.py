@@ -323,7 +323,22 @@ with tab_run:
                 help="dc-megablast: balanced default. blastn: most sensitive (use if exons are missed).",
             )
             min_pident  = st.number_input("Min % identity", value=70, min_value=30, max_value=100)
-            min_cds_pct = st.number_input("Min CDS % of reference", value=50, min_value=10, max_value=100)
+            ref_strategy = st.radio(
+                "Reference strategy",
+                ["PCR amplicon (relaxed)", "Coding CDS / protein (strict)"],
+                help=(
+                    "PCR amplicon: NCBI nucleotide refs are usually amplicons — "
+                    "skips the complete-CDS length gate; the genomic amplicon is the "
+                    "primary output. Coding: enforce CDS completeness for curated "
+                    "CDS / protein references."
+                ),
+            )
+            require_cds = ref_strategy.startswith("Coding")
+            min_cds_pct = st.number_input(
+                "Min CDS % of reference", value=50, min_value=10, max_value=100,
+                disabled=not require_cds,
+                help="Only enforced in Coding (strict) strategy.",
+            )
             evalue      = st.text_input("E-value", "1e-20")
         with cc:
             st.markdown("**Tool check:**")
@@ -444,6 +459,7 @@ with tab_run:
                         blastn_bin=blastn_bin,
                         tblastn_bin=tblastn_bin,
                         run_dir=str(rr[1]),
+                        require_complete_cds=require_cds,
                     )
 
                 if result:
