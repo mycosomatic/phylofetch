@@ -85,6 +85,12 @@ tab_refs, tab_run, tab_results = st.tabs(
 # ════════════════════════════════════════════════════════════════════════════
 with tab_refs:
 
+    st.caption(
+        "Reference sequences are used only by the **BLAST** extraction strategies. "
+        "If you plan to extract with **PCR Primers**, you can skip this tab and go "
+        "straight to **Run Extraction**."
+    )
+
     with st.expander("🔑 NCBI Entrez email (required for fetching)", expanded=not bool(ncbi_email)):
         col_e, col_s = st.columns([3, 1])
         with col_e:
@@ -281,8 +287,28 @@ with tab_refs:
 with tab_run:
 
     if not st.session_state.assemblies:
-        st.warning("No assemblies registered. Use Project Setup → Import Assemblies first.")
+        st.warning("No assemblies registered. Use the Assembly Manager page to import assemblies first.")
         st.stop()
+
+    # ── Extraction strategy (choose first — it drives the whole workflow) ──────
+    ref_strategy = st.radio(
+        "Extraction strategy",
+        ["BLAST – PCR amplicon refs (relaxed)", "BLAST – CDS / protein (strict)", "PCR Primers"],
+        horizontal=True,
+        help=(
+            "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate. "
+            "BLAST (strict): curated CDS / protein refs — enforces CDS length. "
+            "PCR Primers: locate amplicons directly by primer binding sites (no NCBI refs needed)."
+        ),
+    )
+    require_cds = ref_strategy.startswith("BLAST – CDS")
+    use_primers = ref_strategy == "PCR Primers"
+    if use_primers:
+        st.info(
+            "🔬 **PCR Primer mode** — amplicons are located directly by primer binding sites in "
+            "each assembly. No NCBI reference library is needed; assign a primer pair to each "
+            "locus below."
+        )
 
     col_str, col_loc = st.columns(2)
     with col_str:
@@ -326,32 +352,17 @@ with tab_run:
             blastn_task = st.selectbox(
                 "blastn task",
                 ["dc-megablast", "megablast", "blastn"],
+                disabled=use_primers,
                 help="dc-megablast: balanced default. blastn: most sensitive (use if exons are missed).",
             )
-            min_pident  = st.number_input("Min % identity", value=70, min_value=30, max_value=100)
-            ref_strategy = st.radio(
-                "Extraction strategy",
-                ["BLAST – PCR amplicon refs (relaxed)", "BLAST – CDS / protein (strict)", "PCR Primers"],
-                help=(
-                    "BLAST (relaxed): NCBI amplicon refs — skips CDS completeness gate. "
-                    "BLAST (strict): curated CDS / protein refs — enforces CDS length. "
-                    "PCR Primers: locate amplicons directly by primer binding sites."
-                ),
-            )
-            require_cds   = ref_strategy.startswith("BLAST – CDS")
-            use_primers   = ref_strategy == "PCR Primers"
-            min_cds_pct   = st.number_input(
+            min_pident  = st.number_input("Min % identity", value=70, min_value=30, max_value=100,
+                                          disabled=use_primers)
+            min_cds_pct = st.number_input(
                 "Min CDS % of reference", value=50, min_value=10, max_value=100,
                 disabled=not require_cds,
                 help="Only enforced in BLAST – CDS / protein (strict) strategy.",
             )
-            evalue        = st.text_input("E-value", "1e-20",
-                                          disabled=use_primers)
-            if use_primers:
-                max_mm = st.slider(
-                    "Max primer mismatches", 0, 4, 2,
-                    help="Edit distance tolerance per primer. 2 = allows 2 mismatches in each primer.",
-                )
+            evalue      = st.text_input("E-value", "1e-20", disabled=use_primers)
         with cc:
             st.markdown("**Tool check:**")
             for label, exe in [("blastn", blastn_bin), ("tblastn", tblastn_bin), ("ITSx", itsx_bin)]:
@@ -363,11 +374,15 @@ with tab_run:
                 st.caption("`conda install -c bioconda itsx`")
 
     # ── Primer pair assignment (shown only in PCR Primers mode) ───────────────
-    if "use_primers" in dir() and use_primers:
+    if use_primers:
         st.markdown("#### 🔬 Primer pair assignment")
         st.caption(
             "Assign a primer pair to each selected locus. "
             "Choose from the built-in catalogue or enter custom sequences."
+        )
+        max_mm = st.slider(
+            "Max primer mismatches (edit-distance tolerance per primer)", 0, 4, 2,
+            help="2 = allows up to 2 mismatches within each primer binding site.",
         )
         if "primer_assignments" not in st.session_state:
             st.session_state.primer_assignments = {}

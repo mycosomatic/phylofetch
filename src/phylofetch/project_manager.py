@@ -35,8 +35,8 @@ PROJECT_SUBDIRS = ("metadata", "runs", "results", "scratch", "logs")
 # Columns for the human-readable assembly manifest (metadata/assembly_manifest.tsv).
 ASSEMBLY_MANIFEST_FIELDS = [
     "strain_id", "assembly_path", "assembler", "num_contigs", "n50",
-    "total_length_mb", "gc_percent", "quast_report", "busco_dirs",
-    "reads_r1", "reads_r2", "registered_at",
+    "total_length_mb", "gc_percent", "quast_report", "busco_dir",
+    "busco_completeness", "registered_at",
 ]
 
 
@@ -248,23 +248,28 @@ def _assembly_record_to_row(strain_id: str, rec: Mapping[str, Any]) -> dict[str,
     quast_report = (rec.get("quast_report") or stats.get("quast_report")
                     or ("(found)" if quast else ""))
 
-    busco = rec.get("busco_dirs") or rec.get("busco_dir") or ""
+    busco = rec.get("busco_dir") or rec.get("busco_dirs") or ""
     if isinstance(busco, (list, tuple)):
         busco = ";".join(str(b) for b in busco)
 
+    busco_info = rec.get("busco")
+    busco_pct = ""
+    if isinstance(busco_info, Mapping):
+        cp = busco_info.get("completeness_pct")
+        busco_pct = cp if cp not in (None, "") else ""
+
     return {
-        "strain_id":       strain_id,
-        "assembly_path":   pick("assembly_path"),
-        "assembler":       pick("assembler"),
-        "num_contigs":     pick("num_contigs"),
-        "n50":             pick("n50"),
-        "total_length_mb": pick("total_length_mb"),
-        "gc_percent":      pick("gc_percent", "mean_gc"),
-        "quast_report":    quast_report,
-        "busco_dirs":      busco,
-        "reads_r1":        rec.get("reads_r1", ""),
-        "reads_r2":        rec.get("reads_r2", ""),
-        "registered_at":   rec.get("registered_at", ""),
+        "strain_id":          strain_id,
+        "assembly_path":      pick("assembly_path"),
+        "assembler":          pick("assembler"),
+        "num_contigs":        pick("num_contigs"),
+        "n50":                pick("n50"),
+        "total_length_mb":    pick("total_length_mb"),
+        "gc_percent":         pick("gc_percent", "mean_gc"),
+        "quast_report":       quast_report,
+        "busco_dir":          busco,
+        "busco_completeness": busco_pct,
+        "registered_at":      rec.get("registered_at", ""),
     }
 
 
@@ -309,8 +314,6 @@ def _migrate_assembly_record(sid: str, record: dict) -> dict:
         stats.pop("gc_percent", None)
     clean["stats"] = stats
     clean.setdefault("strain_id", sid)
-    clean.setdefault("reads_r1", "")
-    clean.setdefault("reads_r2", "")
     return clean
 
 

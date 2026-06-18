@@ -25,8 +25,6 @@ _REGISTRY = {
     "NS26-3-C2": {
         "strain_id": "NS26-3-C2",
         "assembly_path": "/data/NS26-3-C2/NS26-3-C2_final_EGAP_assembly.fasta",
-        "reads_r1": "/data/NS26-3-C2/r1.fastq",
-        "reads_r2": "",
         "registered_at": "2026-06-18T00:00:00+00:00",
         "stats": {
             "assembler": "unknown",
@@ -120,12 +118,6 @@ class TestMigrateAssemblyRecord:
         flat = {"assembly_path": "/d/x.fasta", "n50": 1}
         result = _migrate_assembly_record("MySample", flat)
         assert result["strain_id"] == "MySample"
-
-    def test_reads_backfilled_when_absent(self):
-        flat = {"assembly_path": "/d/x.fasta"}
-        result = _migrate_assembly_record("X", flat)
-        assert result["reads_r1"] == ""
-        assert result["reads_r2"] == ""
 
     def test_roundtrip_migrates_on_load(self, tmp_path):
         """Save a flat-schema record; load_assembly_registry must normalize it."""

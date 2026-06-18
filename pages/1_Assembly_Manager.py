@@ -21,6 +21,7 @@ from phylofetch.assembly_utils import (
     parse_quast_report,
     suggest_unique_strain_ids,
 )
+from phylofetch.busco_utils import scan_busco_run
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
@@ -63,6 +64,42 @@ def _attach_quast(stats: dict, assembly_path: str) -> dict:
         stats["quast"] = parse_quast_report(quast_path)
         stats["quast_report"] = quast_path
     return stats
+
+
+def _parse_busco_dir(busco_dir: str) -> dict:
+    """Parse a BUSCO/Compleasm run directory into a small JSON-storable summary."""
+    if not busco_dir or not Path(busco_dir).is_dir():
+        return {}
+    res = scan_busco_run(busco_dir)
+    if res is None:
+        return {}
+    return {
+        "tool":             res.tool,
+        "lineage":          res.lineage,
+        "completeness_pct": res.completeness_pct,
+        "single_copy":      res.single_copy,
+        "duplicated":       res.duplicated,
+        "fragmented":       res.fragmented,
+        "missing":          res.missing,
+        "total":            res.total,
+    }
+
+
+def _build_record(sid: str, path: str, busco_dir: str = "",
+                  quast_override: str = "") -> dict:
+    """Compute stats (+ optional QUAST override + BUSCO) into a registry record."""
+    stats = _attach_quast(get_assembly_stats(path), path)
+    if quast_override and Path(quast_override).exists():
+        stats["quast"] = parse_quast_report(quast_override)
+        stats["quast_report"] = quast_override
+    return {
+        "strain_id":     sid,
+        "assembly_path": path,
+        "busco_dir":     busco_dir,
+        "busco":         _parse_busco_dir(busco_dir),
+        "stats":         stats,
+        "registered_at": now_iso(),
+    }
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -263,21 +300,11 @@ with tab_add:
                         skipped += 1
                         continue
                     with st.spinner(f"Computing stats: {sid}"):
-                        stats = _attach_quast(get_assembly_stats(row["Path"]), row["Path"])
-                    # Honour user-supplied QUAST override path
-                    custom_quast = str(row.get("QUAST report", "")).strip()
-                    if custom_quast and Path(custom_quast).exists():
-                        stats["quast"] = parse_quast_report(custom_quast)
-                        stats["quast_report"] = custom_quast
-                    st.session_state.assemblies[sid] = {
-                        "strain_id":     sid,
-                        "assembly_path": row["Path"],
-                        "busco_dir":     str(row.get("BUSCO dir", "")).strip(),
-                        "reads_r1":      "",
-                        "reads_r2":      "",
-                        "stats":         stats,
-                        "registered_at": now_iso(),
-                    }
+                        st.session_state.assemblies[sid] = _build_record(
+                            sid, row["Path"],
+                            busco_dir=str(row.get("BUSCO dir", "")).strip(),
+                            quast_override=str(row.get("QUAST report", "")).strip(),
+                        )
                     added += 1
                     prog.progress((i + 1) / max(total, 1))
                 _save()
@@ -290,24 +317,24 @@ with tab_add:
             col_id, col_path = st.columns([1, 2])
             with col_id:
                 strain_id = st.text_input(
-                    "Strain ID *", placeholder="ALT_CA_001"
+                    "Strain ID *", placeholder="CBS_123_45"
                 )
             with col_path:
                 assembly_path = st.text_input(
                     "Assembly FASTA path *",
-                    placeholder="/data/assemblies/ALT_CA_001/assembly.fasta",
+                    placeholder="/data/assemblies/CBS_123_45/assembly.fasta",
                 )
 
-            col_r1, col_r2 = st.columns(2)
-            with col_r1:
-                r1 = st.text_input(
-                    "Illumina R1 reads (optional)",
-                    placeholder="/data/reads/ALT_CA_001_R1.fastq.gz",
+            col_b, col_q = st.columns(2)
+            with col_b:
+                busco_dir = st.text_input(
+                    "BUSCO / Compleasm run dir (optional)",
+                    placeholder="/data/assemblies/CBS_123_45/busco_ascomycota",
                 )
-            with col_r2:
-                r2 = st.text_input(
-                    "Illumina R2 reads (optional)",
-                    placeholder="/data/reads/ALT_CA_001_R2.fastq.gz",
+            with col_q:
+                quast_override = st.text_input(
+                    "QUAST report.tsv (optional)",
+                    placeholder="auto-detected if left blank",
                 )
 
             submitted = st.form_submit_button("Add Assembly")
@@ -320,19 +347,15 @@ with tab_add:
             elif strain_id in st.session_state.assemblies:
                 st.warning(
                     f"'{strain_id}' is already registered. "
-                    "Edit it in the Registered Assemblies tab."
+                    "Remove it in the Registered Assemblies tab to re-add."
                 )
             else:
                 with st.spinner(f"Computing stats for {strain_id}…"):
-                    stats = _attach_quast(get_assembly_stats(assembly_path), assembly_path)
-                st.session_state.assemblies[strain_id] = {
-                    "strain_id":     strain_id,
-                    "assembly_path": assembly_path,
-                    "reads_r1":      r1,
-                    "reads_r2":      r2,
-                    "stats":         stats,
-                    "registered_at": now_iso(),
-                }
+                    st.session_state.assemblies[strain_id] = _build_record(
+                        strain_id, assembly_path,
+                        busco_dir=busco_dir.strip(),
+                        quast_override=quast_override.strip(),
+                    )
                 _save()
                 st.success(f"✅ Added {strain_id}")
                 st.rerun()
@@ -341,25 +364,66 @@ with tab_add:
 # ════════════════════════════════════════════════════════
 # TAB 2 — Registered Assemblies
 # ════════════════════════════════════════════════════════
+def _recompute(sid: str, d: dict) -> bool:
+    """Recompute a single record in place, preserving its registered_at. Returns success."""
+    path = d.get("assembly_path", "")
+    if not path or not os.path.exists(path):
+        return False
+    rec = _build_record(
+        sid, path,
+        busco_dir=d.get("busco_dir", ""),
+        quast_override=(d.get("stats", {}) or {}).get("quast_report", ""),
+    )
+    rec["registered_at"] = d.get("registered_at", rec["registered_at"])
+    st.session_state.assemblies[sid] = rec
+    return True
+
+
 with tab_list:
     if not st.session_state.assemblies:
         st.info("No assemblies registered yet. Use the 'Find / Add' tab.")
     else:
+        # Records with no computed stats (e.g. registered by an older version).
+        missing_stats = [
+            sid for sid, d in st.session_state.assemblies.items()
+            if not (isinstance(d.get("stats"), dict) and d["stats"].get("num_contigs"))
+        ]
+        if missing_stats:
+            st.warning(
+                f"⚠️ {len(missing_stats)} assembly/assemblies have no computed stats. "
+                "This happens for records registered by an older version. "
+                "Click **Recompute all stats** to fix."
+            )
+        if st.button("🔄 Recompute all stats"):
+            prog = st.progress(0)
+            items = list(st.session_state.assemblies.items())
+            failed = []
+            for i, (sid, d) in enumerate(items):
+                if not _recompute(sid, d):
+                    failed.append(sid)
+                prog.progress((i + 1) / max(len(items), 1))
+            _save()
+            if failed:
+                st.error(f"Could not find assembly files for: {', '.join(failed)}")
+            st.success(f"Recomputed {len(items) - len(failed)} assembly/assemblies.")
+            st.rerun()
+
         # Summary table
         rows = []
         for sid, d in st.session_state.assemblies.items():
-            s = d.get("stats", {})
+            s = d.get("stats", {}) or {}
+            b = d.get("busco", {}) or {}
+            cp = b.get("completeness_pct")
             rows.append(
                 {
-                    "Strain ID":    sid,
-                    "Total (Mb)":   s.get("total_length_mb", "—"),
-                    "Contigs":      s.get("num_contigs", "—"),
-                    "N50 (bp)":     s.get("n50", "—"),
-                    "GC (%)":       s.get("mean_gc", "—"),
-                    "Assembler":    s.get("assembler", "—"),
-                    "QUAST":        "✓" if s.get("quast") else "✗",
-                    "R1 linked":    "✓" if d.get("reads_r1") else "✗",
-                    "R2 linked":    "✓" if d.get("reads_r2") else "✗",
+                    "Strain ID":   sid,
+                    "Total (Mb)":  s.get("total_length_mb", "—"),
+                    "Contigs":     s.get("num_contigs", "—"),
+                    "N50 (bp)":    s.get("n50", "—"),
+                    "GC (%)":      s.get("mean_gc", "—"),
+                    "Assembler":   s.get("assembler", "—"),
+                    "QUAST":       "✓" if s.get("quast") else "—",
+                    "BUSCO %":     f"{cp:.1f}" if isinstance(cp, (int, float)) else "—",
                 }
             )
         st.dataframe(
@@ -369,31 +433,54 @@ with tab_list:
         )
 
         st.markdown("---")
-        st.subheader("Edit read paths / remove assembly")
+        st.subheader("Manage assembly")
 
         selected = st.selectbox(
-            "Select strain to edit",
+            "Select strain",
             list(st.session_state.assemblies.keys()),
         )
         if selected:
             d = st.session_state.assemblies[selected]
-            st.caption(f"Assembly: `{d['assembly_path']}`")
+            st.caption(f"Assembly: `{d.get('assembly_path', '')}`")
+            b = d.get("busco", {}) or {}
+            if b:
+                st.caption(
+                    f"BUSCO ({b.get('tool', '?')}, {b.get('lineage', '?')}): "
+                    f"C:{b.get('completeness_pct', 0):.1f}% · "
+                    f"S:{b.get('single_copy', 0)} D:{b.get('duplicated', 0)} "
+                    f"F:{b.get('fragmented', 0)} M:{b.get('missing', 0)}"
+                )
 
-            with st.form(f"edit_reads_{selected}"):
-                r1 = st.text_input("R1 path", value=d.get("reads_r1", ""))
-                r2 = st.text_input("R2 path", value=d.get("reads_r2", ""))
-                save_btn = st.form_submit_button("💾 Save read paths")
+            with st.form(f"link_busco_{selected}"):
+                new_busco = st.text_input(
+                    "Link / update BUSCO or Compleasm run directory",
+                    value=d.get("busco_dir", ""),
+                )
+                if st.form_submit_button("💾 Save BUSCO directory"):
+                    nb = new_busco.strip()
+                    st.session_state.assemblies[selected]["busco_dir"] = nb
+                    st.session_state.assemblies[selected]["busco"] = _parse_busco_dir(nb)
+                    _save()
+                    if nb and not st.session_state.assemblies[selected]["busco"]:
+                        st.warning("Directory saved but no BUSCO/Compleasm results found in it.")
+                    else:
+                        st.success("BUSCO directory saved.")
+                    st.rerun()
 
-            if save_btn:
-                st.session_state.assemblies[selected]["reads_r1"] = r1
-                st.session_state.assemblies[selected]["reads_r2"] = r2
-                _save()
-                st.success("Read paths saved.")
-
-            if st.button(f"🗑️ Remove '{selected}' from registry"):
-                del st.session_state.assemblies[selected]
-                _save()
-                st.rerun()
+            mc1, mc2 = st.columns(2)
+            with mc1:
+                if st.button("🔄 Recompute stats", key=f"recompute_{selected}"):
+                    if _recompute(selected, d):
+                        _save()
+                        st.success("Recomputed.")
+                        st.rerun()
+                    else:
+                        st.error(f"Assembly file not found: {d.get('assembly_path', '')}")
+            with mc2:
+                if st.button(f"🗑️ Remove '{selected}'", key=f"remove_{selected}"):
+                    del st.session_state.assemblies[selected]
+                    _save()
+                    st.rerun()
 
 
 # ════════════════════════════════════════════════════════
@@ -428,6 +515,21 @@ with tab_stats:
             m7.metric("Assembler",       s.get("assembler", "unknown"))
             hcov = s.get("mean_coverage_header", None)
             m8.metric("Header Cov. (×)", hcov if hcov else "n/a")
+
+            # ── BUSCO / Compleasm completeness (if a run dir is linked) ──
+            b = d.get("busco", {}) or {}
+            if b:
+                st.markdown("---")
+                st.markdown(
+                    f"**BUSCO completeness** — {b.get('tool', '?')} · "
+                    f"lineage `{b.get('lineage', '?')}`"
+                )
+                bc1, bc2, bc3, bc4, bc5 = st.columns(5)
+                bc1.metric("Complete", f"{b.get('completeness_pct', 0):.1f} %")
+                bc2.metric("Single-copy", b.get("single_copy", "?"))
+                bc3.metric("Duplicated", b.get("duplicated", "?"))
+                bc4.metric("Fragmented", b.get("fragmented", "?"))
+                bc5.metric("Missing", b.get("missing", "?"))
 
             # ── QUAST report (auto-discovered alongside the assembly) ──
             quast = s.get("quast")
