@@ -18,7 +18,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from phylofetch.assembly_utils import get_assembly_stats, suggest_strain_id
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
-    DEFAULT_PROJECT_DIR, RunManager, check_tools, init_project, load_json,
+    DEFAULT_PROJECT_DIR, DEFAULT_PROJECTS_ROOT, RunManager, check_tools,
+    init_project, list_projects, load_assembly_registry, load_json,
+    safe_slug, save_assembly_registry,
 )
 
 st.set_page_config(page_title="Project Setup", page_icon="⚙️", layout="wide")
@@ -33,6 +35,12 @@ if "project_dir" not in st.session_state:
         "project_dir", str(DEFAULT_PROJECT_DIR)
     )
 
+
+def _persist_assemblies(assemblies: dict) -> None:
+    """Save the registry to the global cache AND the active project."""
+    save_config({"assemblies": assemblies})
+    save_assembly_registry(st.session_state.project_dir, assemblies)
+
 tab_proj, tab_import, tab_tools, tab_history = st.tabs(
     ["📂 Project", "📥 Import Assemblies", "🔧 Tool Status", "📋 Command History"]
 )
@@ -41,22 +49,72 @@ tab_proj, tab_import, tab_tools, tab_history = st.tabs(
 # TAB 1 — Project
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_proj:
-    st.subheader("Workspace")
-    col_path, col_btn = st.columns([3, 1])
-    with col_path:
-        new_dir = st.text_input(
-            "Project directory",
-            value=st.session_state.project_dir,
-            help="phylofetch stores run logs, command history, and project metadata here.",
-        )
-    with col_btn:
-        st.write("")
-        st.write("")
-        if st.button("Initialize / Open"):
+    st.subheader("Projects")
+    st.caption(
+        "A project is a re-openable workspace that durably stores its assembly "
+        "registry, file-location manifest, run logs, and command history under "
+        f"`{DEFAULT_PROJECTS_ROOT}`."
+    )
+
+    existing = list_projects()
+    active_dir = st.session_state.project_dir
+    active_name = Path(active_dir).name
+    st.markdown(f"**Active project:** `{active_name}`  ·  `{active_dir}`")
+
+    col_open, col_new = st.columns(2)
+
+    # ── Open an existing project ──
+    with col_open:
+        st.markdown("**📂 Open existing**")
+        if existing:
+            labels = {
+                f"{p['name']}  ({p['n_assemblies']} assemblies · {p['created_at'][:10]})": p
+                for p in existing
+            }
+            choice = st.selectbox("Project", list(labels.keys()),
+                                  label_visibility="collapsed")
+            if st.button("Open project"):
+                proj = labels[choice]
+                reg = load_assembly_registry(proj["path"])
+                st.session_state.project_dir = proj["path"]
+                st.session_state.assemblies = reg
+                save_config({"project_dir": proj["path"], "assemblies": reg})
+                st.success(f"Opened `{proj['name']}` — {len(reg)} assemblies.")
+                st.rerun()
+        else:
+            st.info("No saved projects yet. Create one →")
+
+    # ── Create a new project ──
+    with col_new:
+        st.markdown("**➕ Create new**")
+        new_name = st.text_input("Project name", placeholder="alternaria_2026",
+                                 label_visibility="collapsed")
+        if st.button("Create project", type="primary"):
+            slug = safe_slug(new_name) if new_name.strip() else ""
+            if not slug:
+                st.error("Enter a project name.")
+            else:
+                target = DEFAULT_PROJECTS_ROOT / slug
+                if target.exists():
+                    st.warning(f"Project `{slug}` already exists — open it instead.")
+                else:
+                    root = init_project(target)
+                    st.session_state.project_dir = str(root)
+                    st.session_state.assemblies = {}
+                    save_config({"project_dir": str(root), "assemblies": {}})
+                    st.success(f"Created `{slug}`.")
+                    st.rerun()
+
+    with st.expander("⚙️ Advanced: use a custom directory"):
+        new_dir = st.text_input("Project directory", value=st.session_state.project_dir)
+        if st.button("Initialize / Open path"):
             root = init_project(new_dir)
+            reg = load_assembly_registry(root)
             st.session_state.project_dir = str(root)
-            save_config({"project_dir": str(root)})
+            st.session_state.assemblies = reg or st.session_state.assemblies
+            save_config({"project_dir": str(root), "assemblies": st.session_state.assemblies})
             st.success(f"Workspace ready: `{root}`")
+            st.rerun()
 
     project_dir = st.session_state.project_dir
     manifest_path = Path(project_dir) / "metadata" / "project_manifest.json"
@@ -68,23 +126,33 @@ with tab_proj:
             icon="📂",
         )
     else:
-        st.warning("Workspace not initialized. Click **Initialize / Open** above.")
+        st.warning("Workspace not initialized.")
 
     st.markdown("---")
     st.subheader(f"Registered assemblies ({len(st.session_state.assemblies)})")
     if st.session_state.assemblies:
-        rows = [
-            {
+        rows = []
+        for sid, v in st.session_state.assemblies.items():
+            s = v.get("stats", {}) if isinstance(v.get("stats"), dict) else {}
+            rows.append({
                 "ID": sid,
                 "Assembly path": v.get("assembly_path", ""),
-                "N50": v.get("n50", ""),
-                "Contigs": v.get("num_contigs", ""),
-                "Size (Mb)": v.get("total_length_mb", ""),
-                "Assembler": v.get("assembler", ""),
-            }
-            for sid, v in st.session_state.assemblies.items()
-        ]
+                "N50": v.get("n50") or s.get("n50", ""),
+                "Contigs": v.get("num_contigs") or s.get("num_contigs", ""),
+                "Size (Mb)": v.get("total_length_mb") or s.get("total_length_mb", ""),
+                "QUAST": "✓" if s.get("quast") else "",
+            })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        manifest_tsv = Path(project_dir) / "metadata" / "assembly_manifest.tsv"
+        if manifest_tsv.exists():
+            with st.expander("📄 Assembly file manifest (all paths)"):
+                st.caption(f"`{manifest_tsv}`")
+                st.code(manifest_tsv.read_text(), language=None)
+                st.download_button("⬇️ Download manifest.tsv",
+                                   data=manifest_tsv.read_bytes(),
+                                   file_name="assembly_manifest.tsv",
+                                   mime="text/tab-separated-values")
     else:
         st.info("No assemblies registered yet. Use the Import tab.")
 
@@ -177,7 +245,7 @@ with tab_import:
                 imported += 1
 
             st.session_state.assemblies = assemblies
-            save_config({"assemblies": assemblies})
+            _persist_assemblies(assemblies)
             st.success(f"Imported {imported} assemblies. Skipped {skipped}.")
             if "scan_rows" in st.session_state:
                 del st.session_state["scan_rows"]
@@ -192,7 +260,7 @@ with tab_import:
             assemblies = dict(st.session_state.assemblies)
             del assemblies[to_remove]
             st.session_state.assemblies = assemblies
-            save_config({"assemblies": assemblies})
+            _persist_assemblies(assemblies)
             st.success(f"Removed {to_remove}.")
             st.rerun()
 

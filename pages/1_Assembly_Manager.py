@@ -22,6 +22,12 @@ from phylofetch.assembly_utils import (
     suggest_strain_id,
 )
 from phylofetch.config import load_config, save_config
+from phylofetch.project_manager import (
+    DEFAULT_PROJECT_DIR,
+    load_assembly_registry,
+    now_iso,
+    save_assembly_registry,
+)
 
 # ── Page setup ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -30,13 +36,24 @@ st.set_page_config(
 st.title("📁 Assembly Manager")
 st.caption("Register assemblies, link read files, and explore per-strain statistics.")
 
+
+def _active_project() -> str:
+    return load_config().get("project_dir", str(DEFAULT_PROJECT_DIR))
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 if "assemblies" not in st.session_state:
-    st.session_state.assemblies = load_config().get("assemblies", {})
+    # Prefer the active project's saved registry; fall back to global config.
+    st.session_state.assemblies = (
+        load_assembly_registry(_active_project())
+        or load_config().get("assemblies", {})
+    )
 
 
 def _save():
+    # Global cache (other pages read this) + durable per-project registry/manifest.
     save_config({"assemblies": st.session_state.assemblies})
+    save_assembly_registry(_active_project(), st.session_state.assemblies)
 
 
 def _attach_quast(stats: dict, assembly_path: str) -> dict:
@@ -242,6 +259,7 @@ with tab_add:
                         "reads_r1":      "",
                         "reads_r2":      "",
                         "stats":         stats,
+                        "registered_at": now_iso(),
                     }
                     added += 1
                     prog.progress((i + 1) / max(total, 1))
@@ -296,6 +314,7 @@ with tab_add:
                     "reads_r1":      r1,
                     "reads_r2":      r2,
                     "stats":         stats,
+                    "registered_at": now_iso(),
                 }
                 _save()
                 st.success(f"✅ Added {strain_id}")
