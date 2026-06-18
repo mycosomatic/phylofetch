@@ -41,6 +41,12 @@ from phylofetch.ncbi_utils import (
     search_ncbi_protein,
     set_email,
 )
+from phylofetch.primer_utils import (
+    LOCUS_PRIMER_MAP,
+    PRIMER_CATALOGUE,
+    PrimerPair,
+    run_primer_extraction,
+)
 from phylofetch.project_manager import DEFAULT_PROJECT_DIR, RunManager
 
 st.set_page_config(page_title="Loci Extraction", page_icon="🧬", layout="wide")
@@ -324,22 +330,28 @@ with tab_run:
             )
             min_pident  = st.number_input("Min % identity", value=70, min_value=30, max_value=100)
             ref_strategy = st.radio(
-                "Reference strategy",
-                ["PCR amplicon (relaxed)", "Coding CDS / protein (strict)"],
+                "Extraction strategy",
+                ["BLAST – PCR amplicon refs (relaxed)", "BLAST – CDS / protein (strict)", "PCR Primers"],
                 help=(
-                    "PCR amplicon: NCBI nucleotide refs are usually amplicons — "
-                    "skips the complete-CDS length gate; the genomic amplicon is the "
-                    "primary output. Coding: enforce CDS completeness for curated "
-                    "CDS / protein references."
+                    "BLAST (relaxed): NCBI amplicon refs — skips CDS completeness gate. "
+                    "BLAST (strict): curated CDS / protein refs — enforces CDS length. "
+                    "PCR Primers: locate amplicons directly by primer binding sites."
                 ),
             )
-            require_cds = ref_strategy.startswith("Coding")
-            min_cds_pct = st.number_input(
+            require_cds   = ref_strategy.startswith("BLAST – CDS")
+            use_primers   = ref_strategy == "PCR Primers"
+            min_cds_pct   = st.number_input(
                 "Min CDS % of reference", value=50, min_value=10, max_value=100,
                 disabled=not require_cds,
-                help="Only enforced in Coding (strict) strategy.",
+                help="Only enforced in BLAST – CDS / protein (strict) strategy.",
             )
-            evalue      = st.text_input("E-value", "1e-20")
+            evalue        = st.text_input("E-value", "1e-20",
+                                          disabled=use_primers)
+            if use_primers:
+                max_mm = st.slider(
+                    "Max primer mismatches", 0, 4, 2,
+                    help="Edit distance tolerance per primer. 2 = allows 2 mismatches in each primer.",
+                )
         with cc:
             st.markdown("**Tool check:**")
             for label, exe in [("blastn", blastn_bin), ("tblastn", tblastn_bin), ("ITSx", itsx_bin)]:
@@ -350,6 +362,57 @@ with tab_run:
             if not shutil.which(itsx_bin):
                 st.caption("`conda install -c bioconda itsx`")
 
+    # ── Primer pair assignment (shown only in PCR Primers mode) ───────────────
+    if "use_primers" in dir() and use_primers:
+        st.markdown("#### 🔬 Primer pair assignment")
+        st.caption(
+            "Assign a primer pair to each selected locus. "
+            "Choose from the built-in catalogue or enter custom sequences."
+        )
+        if "primer_assignments" not in st.session_state:
+            st.session_state.primer_assignments = {}
+
+        primer_assignments: dict[str, PrimerPair] = {}
+        for locus in sel_loci:
+            with st.container():
+                st.markdown(f"**{locus}**")
+                catalogue_options = LOCUS_PRIMER_MAP.get(locus, [])
+                source_opts = ["— catalogue —"] + catalogue_options + ["Custom…"]
+                prev_src = st.session_state.primer_assignments.get(f"{locus}_src", source_opts[1] if catalogue_options else "Custom…")
+                pa, pb = st.columns([2, 3])
+                with pa:
+                    src = st.selectbox(
+                        "Primer pair",
+                        source_opts,
+                        index=source_opts.index(prev_src) if prev_src in source_opts else 0,
+                        key=f"pp_src_{locus}",
+                        label_visibility="collapsed",
+                    )
+                    st.session_state.primer_assignments[f"{locus}_src"] = src
+                with pb:
+                    if src == "Custom…":
+                        c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+                        fwd_seq = c1.text_input("Fwd (5'→3')", key=f"pp_fwd_{locus}", placeholder="ATGCATGC…")
+                        rev_seq = c2.text_input("Rev (5'→3')", key=f"pp_rev_{locus}", placeholder="ATGCATGC…")
+                        min_amp = c3.number_input("Min bp", value=100, step=50, key=f"pp_min_{locus}")
+                        max_amp = c4.number_input("Max bp", value=5000, step=100, key=f"pp_max_{locus}")
+                        if fwd_seq and rev_seq:
+                            primer_assignments[locus] = PrimerPair(
+                                name=f"custom_{locus}", locus=locus,
+                                fwd=fwd_seq, rev=rev_seq,
+                                min_amplicon=int(min_amp), max_amplicon=int(max_amp),
+                            )
+                        else:
+                            st.warning(f"Enter both primers for {locus} to enable extraction.")
+                    elif src != "— catalogue —":
+                        pp = PRIMER_CATALOGUE[src]
+                        st.caption(
+                            f"Fwd: `{pp.fwd[:28]}{'…' if len(pp.fwd)>28 else ''}`  "
+                            f"Rev: `{pp.rev[:28]}{'…' if len(pp.rev)>28 else ''}`  "
+                            f"Expected: {pp.min_amplicon}–{pp.max_amplicon} bp"
+                        )
+                        primer_assignments[locus] = pp
+
     if not sel_strains or not sel_loci:
         st.info("Select strains and loci above.")
         st.stop()
@@ -357,11 +420,23 @@ with tab_run:
     rdna_run   = [l for l in sel_loci if l in ("ITS", "LSU", "SSU", "ITS1", "ITS2", "ITS_full")]
     coding_run = [l for l in sel_loci if l not in rdna_run]
 
-    st.markdown(
-        f"**Ready:** {len(sel_strains)} strain(s) · "
-        f"rDNA (ITSx): {', '.join(rdna_run) or '—'} · "
-        f"CDS (BLAST): {', '.join(coding_run) or '—'}"
-    )
+    # Primer mode: show assignment coverage warning before run
+    if use_primers:
+        unassigned = [l for l in sel_loci if l not in primer_assignments]
+        assigned   = [l for l in sel_loci if l in primer_assignments]
+        if unassigned:
+            st.warning(f"No primer pair assigned for: {', '.join(unassigned)}. Those loci will be skipped.")
+        st.markdown(
+            f"**Ready:** {len(sel_strains)} strain(s) · "
+            f"PCR Primers: {', '.join(assigned) or '—'} · "
+            f"Max mismatches: {max_mm}"
+        )
+    else:
+        st.markdown(
+            f"**Ready:** {len(sel_strains)} strain(s) · "
+            f"rDNA (ITSx): {', '.join(rdna_run) or '—'} · "
+            f"CDS (BLAST): {', '.join(coding_run) or '—'}"
+        )
 
     if st.button("🚀 Run extraction", type="primary"):
         loci_dir       = os.path.join(output_base, "loci")
@@ -370,15 +445,18 @@ with tab_run:
         os.makedirs(per_strain_dir, exist_ok=True)
         os.makedirs(combined_dir,   exist_ok=True)
 
-        try:
-            evalue_float = float(evalue)
-        except ValueError:
-            st.error(f"Invalid e-value: {evalue}")
-            st.stop()
+        evalue_float = 1e-20
+        if not use_primers:
+            try:
+                evalue_float = float(evalue)
+            except ValueError:
+                st.error(f"Invalid e-value: {evalue}")
+                st.stop()
 
         manager = RunManager(project_dir)
 
-        total_jobs = len(sel_strains) * len(sel_loci)
+        active_loci    = list(primer_assignments) if use_primers else sel_loci
+        total_jobs     = len(sel_strains) * max(len(active_loci), 1)
         prog  = st.progress(0)
         job_n = 0
 
@@ -387,6 +465,42 @@ with tab_run:
             strain_out = os.path.join(per_strain_dir, strain_id)
             os.makedirs(strain_out, exist_ok=True)
             st.markdown(f"#### `{strain_id}`")
+
+            # ── PCR Primer strategy ────────────────────────────────────────
+            if use_primers:
+                for locus, pp in primer_assignments.items():
+                    locus_out = os.path.join(strain_out, locus)
+                    os.makedirs(locus_out, exist_ok=True)
+                    with st.spinner(f"[{strain_id}] Primer search: {locus} ({pp.name})…"):
+                        result, status = run_primer_extraction(
+                            assembly_fasta=assembly,
+                            primer_pair=pp,
+                            output_dir=locus_out,
+                            strain_id=strain_id,
+                            locus_name=locus,
+                            max_mismatches=max_mm,
+                            blastn_bin=blastn_bin,
+                        )
+                    if result:
+                        mm_note = (
+                            f"fwd_mm={result['fwd_mismatch']}, rev_mm={result['rev_mismatch']}"
+                        )
+                        candidates_note = (
+                            f" · {result['n_candidates']} site(s) found"
+                            if result["n_candidates"] > 1 else ""
+                        )
+                        st.write(
+                            f"✅ {locus} ({pp.name}): {result['amp_len']} bp amplicon "
+                            f"on `{result['contig']}` [{result['strand']}] "
+                            f"coords {result['amp_start']}..{result['amp_end']} "
+                            f"· {mm_note}{candidates_note}"
+                        )
+                    else:
+                        st.write(f"⚠️ {locus}: {status}")
+                    job_n += 1; prog.progress(job_n / total_jobs)
+                # skip BLAST/ITSx blocks below when in primer mode
+                prog.progress(1.0)
+                continue
 
             # ── ITSx for rDNA ─────────────────────────────────────────────
             if rdna_run:
@@ -485,8 +599,20 @@ with tab_run:
 
         # ── Merge combined files ───────────────────────────────────────────
         st.markdown("**Merging into combined multi-FASTAs…**")
-        for locus in sel_loci:
-            if locus in ("ITS", "LSU", "SSU", "ITS1", "ITS2", "ITS_full"):
+        merge_loci = list(primer_assignments) if use_primers else sel_loci
+        for locus in merge_loci:
+            # Primer-based amplicons
+            if use_primers:
+                recs = []
+                for sd in sorted(Path(per_strain_dir).iterdir()):
+                    fp = sd / locus / f"{locus}_amplicon.fasta"
+                    if fp.exists():
+                        recs.extend(list(SeqIO.parse(str(fp), "fasta")))
+                if recs:
+                    out = os.path.join(combined_dir, f"{locus}_amplicon_combined.fasta")
+                    SeqIO.write(recs, out, "fasta")
+                    st.write(f"✅ {locus}_amplicon_combined.fasta — {len(recs)} sequence(s)")
+            elif locus in ("ITS", "LSU", "SSU", "ITS1", "ITS2", "ITS_full"):
                 recs = []
                 for sd in sorted(Path(per_strain_dir).iterdir()):
                     fp = sd / locus / f"{locus}.fasta"
