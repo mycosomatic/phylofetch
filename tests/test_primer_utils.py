@@ -24,10 +24,17 @@ from phylofetch.primer_utils import (
     PRIMER_CATALOGUE,
     LOCUS_PRIMER_MAP,
     PrimerPair,
+    _effective_mismatch,
     _run_blastn_short,
+    delete_user_primer,
     find_primer_amplicons,
     extract_primer_amplicon,
+    get_primer_catalogue,
+    load_builtin_primers,
+    load_user_primers,
+    locus_primer_map,
     run_primer_extraction,
+    save_user_primer,
 )
 
 
@@ -297,3 +304,153 @@ class TestRunPrimerExtraction:
             )
         if result:
             assert result["n_candidates"] >= 1
+
+    def test_extraction_log_written(self, tmp_path):
+        asm = self._asm(tmp_path, length=2000)
+        hits = _fake_hits(fwd_sstart=100, fwd_send=118, rev_sstart=618, rev_send=600)
+        out = tmp_path / "out"
+        with patch("phylofetch.primer_utils._run_blastn_short", return_value=hits):
+            run_primer_extraction(asm, self._PP, str(out), "S1", "ITS")
+        log = out / "ITS_extraction.log"
+        assert log.exists()
+        text = log.read_text()
+        assert "ITS1/ITS4" in text
+        assert "citation" in text
+
+    def test_chosen_index_selects_candidate(self, tmp_path):
+        asm = self._asm(tmp_path, length=2000)
+        # Two candidates with different coords; pick index 1 explicitly
+        cands = [
+            {"contig": "ctg1", "strand": "+", "amp_start": 100, "amp_end": 618,
+             "amp_len": 519, "fwd_mismatch": 0, "rev_mismatch": 0,
+             "fwd_edit": 0, "rev_edit": 0, "total_edit": 0},
+            {"contig": "ctg1", "strand": "+", "amp_start": 200, "amp_end": 700,
+             "amp_len": 501, "fwd_mismatch": 1, "rev_mismatch": 1,
+             "fwd_edit": 1, "rev_edit": 1, "total_edit": 2},
+        ]
+        result, status = run_primer_extraction(
+            asm, self._PP, str(tmp_path / "out"), "S1", "ITS",
+            candidates=cands, chosen_index=1,
+        )
+        assert status == "ok"
+        assert result["amp_start"] == 200
+        assert result["amp_len"] == 501
+
+
+# ── Citable built-in library ──────────────────────────────────────────────────
+
+class TestCitableLibrary:
+    def test_every_builtin_pair_is_cited(self):
+        builtin = load_builtin_primers()
+        assert builtin, "built-in catalogue must not be empty"
+        for name, pp in builtin.items():
+            assert pp.source,        f"{name} missing source"
+            assert pp.citation,      f"{name} missing citation"
+            assert pp.reference_url, f"{name} missing reference_url"
+            assert pp.fwd_name,      f"{name} missing fwd_name"
+            assert pp.rev_name,      f"{name} missing rev_name"
+            assert pp.origin == "built-in"
+
+    def test_act512f_sequence_is_corrected(self):
+        # Regression: the old catalogue had a corrupted 35-nt ACT-512F.
+        pp = PRIMER_CATALOGUE["ACT-512F/ACT-783R"]
+        assert pp.fwd == "ATGTGCAAGGCCGGTTTCGC"
+        assert len(pp.fwd) == 20
+
+    def test_sequences_are_iupac_only(self):
+        valid = set("ACGTURYSWKMBDHVN")
+        for name, pp in load_builtin_primers().items():
+            assert set(pp.fwd) <= valid, f"{name} fwd has non-IUPAC chars"
+            assert set(pp.rev) <= valid, f"{name} rev has non-IUPAC chars"
+
+    def test_no_orphan_loci(self):
+        # Every primer locus must be a real locus in the NCBI catalogue
+        # (GS was an orphan in the old hardcoded catalogue).
+        from phylofetch.ncbi_utils import LOCUS_CATALOGUE
+        valid = set(LOCUS_CATALOGUE)
+        for name, pp in load_builtin_primers().items():
+            assert pp.locus in valid, f"{name} targets unknown locus {pp.locus}"
+
+    def test_locus_primer_map_helper(self):
+        m = locus_primer_map(load_builtin_primers())
+        assert "ITS" in m and "SSU" in m and "GAPDH" in m
+        assert "ITS1/ITS4" in m["ITS"]
+
+
+# ── User primer library persistence ───────────────────────────────────────────
+
+class TestUserLibrary:
+    def _path(self, tmp_path):
+        return tmp_path / "primers.json"
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        p = self._path(tmp_path)
+        pp = PrimerPair(name="MyPair", locus="ITS", fwd="ATGC", rev="CGTA",
+                        min_amplicon=200, max_amplicon=600, source="me")
+        save_user_primer(pp, path=p)
+        loaded = load_user_primers(path=p)
+        assert "MyPair" in loaded
+        assert loaded["MyPair"].fwd == "ATGC"
+        assert loaded["MyPair"].origin == "user"
+        assert loaded["MyPair"].min_amplicon == 200
+
+    def test_delete_user_primer(self, tmp_path):
+        p = self._path(tmp_path)
+        save_user_primer(PrimerPair(name="Tmp", locus="ITS", fwd="A", rev="T"), path=p)
+        assert delete_user_primer("Tmp", path=p) is True
+        assert "Tmp" not in load_user_primers(path=p)
+        assert delete_user_primer("Tmp", path=p) is False
+
+    def test_user_overrides_builtin_in_merge(self, tmp_path):
+        p = self._path(tmp_path)
+        # Shadow a built-in name with a user definition
+        save_user_primer(PrimerPair(name="ITS1/ITS4", locus="ITS",
+                                    fwd="AAAA", rev="TTTT"), path=p)
+        merged = get_primer_catalogue(include_user=True, user_path=p)
+        assert merged["ITS1/ITS4"].fwd == "AAAA"
+        assert merged["ITS1/ITS4"].origin == "user"
+
+    def test_missing_user_file_is_empty(self, tmp_path):
+        assert load_user_primers(path=tmp_path / "nope.json") == {}
+
+
+# ── Edit-distance hardening ────────────────────────────────────────────────────
+
+class TestEditDistanceHardening:
+    _PP = PrimerPair(name="T/T", locus="ITS",
+                     fwd="ATGCATGCATGCATGCATGC",   # 20 nt
+                     rev="CGTAGCTAGCTAGCTAGCTA",   # 20 nt
+                     min_amplicon=400, max_amplicon=800)
+
+    def test_effective_mismatch_counts_truncation(self):
+        # 0 substitutions but only 15/20 aligned → 5 unaligned bases
+        hit = {"mismatch": 0, "length": 15}
+        assert _effective_mismatch(hit, 20) == 5
+
+    def test_truncated_primer_rejected(self):
+        # fwd aligns only 16/20 (4 unaligned) with 0 substitutions → edit 4 > 2
+        hits = [
+            {"qseqid": "FWD", "sseqid": "ctg1", "pident": 100.0, "length": 16,
+             "mismatch": 0, "qstart": 1, "qend": 16, "sstart": 100, "send": 115,
+             "evalue": 1e-3, "bitscore": 30.0},
+            {"qseqid": "REV", "sseqid": "ctg1", "pident": 100.0, "length": 20,
+             "mismatch": 0, "qstart": 1, "qend": 20, "sstart": 619, "send": 600,
+             "evalue": 1e-5, "bitscore": 40.0},
+        ]
+        with patch("phylofetch.primer_utils._run_blastn_short", return_value=hits):
+            cands = find_primer_amplicons("fake.fasta", self._PP, max_mismatches=2)
+        assert cands == []
+
+    def test_full_length_primer_accepted(self):
+        hits = [
+            {"qseqid": "FWD", "sseqid": "ctg1", "pident": 100.0, "length": 20,
+             "mismatch": 1, "qstart": 1, "qend": 20, "sstart": 100, "send": 119,
+             "evalue": 1e-5, "bitscore": 38.0},
+            {"qseqid": "REV", "sseqid": "ctg1", "pident": 100.0, "length": 20,
+             "mismatch": 0, "qstart": 1, "qend": 20, "sstart": 619, "send": 600,
+             "evalue": 1e-5, "bitscore": 40.0},
+        ]
+        with patch("phylofetch.primer_utils._run_blastn_short", return_value=hits):
+            cands = find_primer_amplicons("fake.fasta", self._PP, max_mismatches=2)
+        assert len(cands) == 1
+        assert cands[0]["total_edit"] == 1

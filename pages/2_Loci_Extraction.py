@@ -42,10 +42,14 @@ from phylofetch.ncbi_utils import (
     set_email,
 )
 from phylofetch.primer_utils import (
-    LOCUS_PRIMER_MAP,
-    PRIMER_CATALOGUE,
     PrimerPair,
+    delete_user_primer,
+    find_primer_amplicons,
+    get_primer_catalogue,
+    load_user_primers,
+    locus_primer_map,
     run_primer_extraction,
+    save_user_primer,
 )
 from phylofetch.project_manager import DEFAULT_PROJECT_DIR, RunManager
 
@@ -375,14 +379,20 @@ with tab_run:
 
     # ── Primer pair assignment (shown only in PCR Primers mode) ───────────────
     if use_primers:
+        primer_cat       = get_primer_catalogue()
+        primer_locus_map = locus_primer_map(primer_cat)
+
         st.markdown("#### 🔬 Primer pair assignment")
         st.caption(
-            "Assign a primer pair to each selected locus. "
-            "Choose from the built-in catalogue or enter custom sequences."
+            "Assign a primer pair to each selected locus — pick from the built-in "
+            "citable catalogue, your saved library, or enter custom sequences. This is "
+            "in-silico PCR: each primer pair is located in the assembly and the region "
+            "between them is extracted, useful when NCBI lacks references that map cleanly."
         )
         max_mm = st.slider(
-            "Max primer mismatches (edit-distance tolerance per primer)", 0, 4, 2,
-            help="2 = allows up to 2 mismatches within each primer binding site.",
+            "Max primer mismatches (edit distance per primer: substitutions + unaligned bases)",
+            0, 4, 2,
+            help="2 = up to 2 mismatches or truncated bases within each primer binding site.",
         )
         if "primer_assignments" not in st.session_state:
             st.session_state.primer_assignments = {}
@@ -391,17 +401,16 @@ with tab_run:
         for locus in sel_loci:
             with st.container():
                 st.markdown(f"**{locus}**")
-                catalogue_options = LOCUS_PRIMER_MAP.get(locus, [])
+                catalogue_options = primer_locus_map.get(locus, [])
                 source_opts = ["— catalogue —"] + catalogue_options + ["Custom…"]
-                prev_src = st.session_state.primer_assignments.get(f"{locus}_src", source_opts[1] if catalogue_options else "Custom…")
+                prev_src = st.session_state.primer_assignments.get(
+                    f"{locus}_src", source_opts[1] if catalogue_options else "Custom…")
                 pa, pb = st.columns([2, 3])
                 with pa:
                     src = st.selectbox(
-                        "Primer pair",
-                        source_opts,
+                        "Primer pair", source_opts,
                         index=source_opts.index(prev_src) if prev_src in source_opts else 0,
-                        key=f"pp_src_{locus}",
-                        label_visibility="collapsed",
+                        key=f"pp_src_{locus}", label_visibility="collapsed",
                     )
                     st.session_state.primer_assignments[f"{locus}_src"] = src
                 with pb:
@@ -414,19 +423,108 @@ with tab_run:
                         if fwd_seq and rev_seq:
                             primer_assignments[locus] = PrimerPair(
                                 name=f"custom_{locus}", locus=locus,
-                                fwd=fwd_seq, rev=rev_seq,
+                                fwd=fwd_seq.strip().upper(), rev=rev_seq.strip().upper(),
                                 min_amplicon=int(min_amp), max_amplicon=int(max_amp),
+                                origin="user",
                             )
+                            sc1, sc2 = st.columns([2, 1])
+                            save_name = sc1.text_input(
+                                "Save as", value=f"{locus}_custom",
+                                key=f"pp_save_name_{locus}", label_visibility="collapsed",
+                                placeholder="name for my library",
+                            )
+                            if sc2.button("💾 Save to my library", key=f"pp_save_{locus}"):
+                                if save_name.strip():
+                                    save_user_primer(PrimerPair(
+                                        name=save_name.strip(), locus=locus,
+                                        fwd=fwd_seq.strip().upper(), rev=rev_seq.strip().upper(),
+                                        min_amplicon=int(min_amp), max_amplicon=int(max_amp),
+                                        source="user-added", origin="user",
+                                    ))
+                                    st.success(f"Saved '{save_name.strip()}' to ~/.phylofetch/primers.json")
+                                    st.rerun()
+                                else:
+                                    st.warning("Enter a name to save.")
                         else:
                             st.warning(f"Enter both primers for {locus} to enable extraction.")
                     elif src != "— catalogue —":
-                        pp = PRIMER_CATALOGUE[src]
+                        pp = primer_cat[src]
+                        badge = "👤 user" if pp.origin == "user" else "📚 built-in"
                         st.caption(
-                            f"Fwd: `{pp.fwd[:28]}{'…' if len(pp.fwd)>28 else ''}`  "
-                            f"Rev: `{pp.rev[:28]}{'…' if len(pp.rev)>28 else ''}`  "
-                            f"Expected: {pp.min_amplicon}–{pp.max_amplicon} bp"
+                            f"{badge} · {pp.fwd_name or 'F'}: `{pp.fwd}` · "
+                            f"{pp.rev_name or 'R'}: `{pp.rev}` · "
+                            f"{pp.min_amplicon}–{pp.max_amplicon} bp"
                         )
+                        if pp.source:
+                            ref = f" · [ref]({pp.reference_url})" if pp.reference_url else ""
+                            st.caption(f"📖 {pp.source}{ref}")
                         primer_assignments[locus] = pp
+
+        # Manage saved (user) primers
+        user_lib = load_user_primers()
+        if user_lib:
+            with st.expander(f"📁 My primer library — {len(user_lib)} saved pair(s)"):
+                for uname, upp in user_lib.items():
+                    uc1, uc2 = st.columns([5, 1])
+                    uc1.caption(
+                        f"**{uname}** · {upp.locus} · F:`{upp.fwd}` R:`{upp.rev}` · "
+                        f"{upp.min_amplicon}–{upp.max_amplicon} bp"
+                    )
+                    if uc2.button("🗑️ Delete", key=f"del_user_{uname}"):
+                        delete_user_primer(uname)
+                        st.rerun()
+
+        # Optional: preview binding sites and disambiguate off-target hits
+        if primer_assignments:
+            with st.expander("🔍 Preview & choose binding sites (handle off-target hits)"):
+                st.caption(
+                    "Scan assemblies for every primer binding site, then pick which "
+                    "amplicon to extract per strain/locus. If you skip this, the "
+                    "lowest-edit-distance site is used automatically."
+                )
+                if st.button("Scan binding sites", key="scan_primers"):
+                    scan_mgr = RunManager(project_dir)
+                    scan: dict[str, list] = {}
+                    jobs = [(s, l) for s in sel_strains for l in primer_assignments]
+                    sprog = st.progress(0)
+                    for i, (s, l) in enumerate(jobs, 1):
+                        asm = st.session_state.assemblies[s]["assembly_path"]
+                        scan[f"{s}|{l}"] = find_primer_amplicons(
+                            asm, primer_assignments[l],
+                            max_mismatches=max_mm, blastn_bin=blastn_bin,
+                            manager=scan_mgr, action=f"primer_scan_{l}_{s}",
+                        )
+                        sprog.progress(i / max(len(jobs), 1))
+                    st.session_state["primer_scan"] = scan
+
+                scan = st.session_state.get("primer_scan", {})
+                for s in sel_strains:
+                    for l in primer_assignments:
+                        key = f"{s}|{l}"
+                        cands = scan.get(key)
+                        if cands is None:
+                            continue
+                        st.markdown(f"**`{s}` · {l}** — {len(cands)} site(s)")
+                        if not cands:
+                            st.caption("⚠️ No binding sites within the size window.")
+                            continue
+                        st.dataframe(pd.DataFrame([{
+                            "#": i, "contig": c["contig"], "strand": c["strand"],
+                            "coords": f"{c['amp_start']}..{c['amp_end']}",
+                            "len(bp)": c["amp_len"], "fwd_mm": c["fwd_edit"],
+                            "rev_mm": c["rev_edit"], "total_mm": c["total_edit"],
+                        } for i, c in enumerate(cands)]),
+                            hide_index=True, use_container_width=True)
+                        opts = [
+                            f"{i}: {c['contig']} {c['strand']} "
+                            f"{c['amp_start']}..{c['amp_end']} ({c['amp_len']} bp, mm {c['total_edit']})"
+                            for i, c in enumerate(cands)
+                        ]
+                        choice = st.selectbox(
+                            f"Extract which site? ({s} / {l})", opts, index=0,
+                            key=f"primer_choice_{key}",
+                        )
+                        st.session_state[f"primer_pick_{key}"] = opts.index(choice)
 
     if not sel_strains or not sel_loci:
         st.info("Select strains and loci above.")
@@ -483,9 +581,15 @@ with tab_run:
 
             # ── PCR Primer strategy ────────────────────────────────────────
             if use_primers:
+                scan = st.session_state.get("primer_scan", {})
                 for locus, pp in primer_assignments.items():
                     locus_out = os.path.join(strain_out, locus)
                     os.makedirs(locus_out, exist_ok=True)
+                    # Use a pre-scanned + user-chosen binding site if available.
+                    # Fall back to a fresh search when nothing was scanned.
+                    scan_key  = f"{strain_id}|{locus}"
+                    chosen    = scan.get(scan_key) or None
+                    pick_idx  = st.session_state.get(f"primer_pick_{scan_key}", 0)
                     with st.spinner(f"[{strain_id}] Primer search: {locus} ({pp.name})…"):
                         result, status = run_primer_extraction(
                             assembly_fasta=assembly,
@@ -495,10 +599,13 @@ with tab_run:
                             locus_name=locus,
                             max_mismatches=max_mm,
                             blastn_bin=blastn_bin,
+                            manager=manager,
+                            candidates=chosen,
+                            chosen_index=pick_idx,
                         )
                     if result:
                         mm_note = (
-                            f"fwd_mm={result['fwd_mismatch']}, rev_mm={result['rev_mismatch']}"
+                            f"fwd_mm={result['fwd_edit']}, rev_mm={result['rev_edit']}"
                         )
                         candidates_note = (
                             f" · {result['n_candidates']} site(s) found"
@@ -677,7 +784,8 @@ with tab_results:
                 length = 0
                 lsd = sd / locus
                 if lsd.is_dir():
-                    for fname in [f"{locus}_CDS.fasta", f"{locus}.fasta"]:
+                    for fname in [f"{locus}_CDS.fasta", f"{locus}_amplicon.fasta",
+                                  f"{locus}.fasta"]:
                         fp = lsd / fname
                         if fp.exists():
                             recs = list(SeqIO.parse(str(fp), "fasta"))
@@ -717,6 +825,8 @@ with tab_results:
 
                 # CDS summary
                 cds_fp = locus_dir / f"{locus}_CDS.fasta"
+                if not cds_fp.exists():
+                    cds_fp = locus_dir / f"{locus}_amplicon.fasta"
                 if not cds_fp.exists():
                     cds_fp = locus_dir / f"{locus}.fasta"
                 if cds_fp.exists():

@@ -67,6 +67,22 @@ pytest tests/ -v --cov=phylofetch --cov-report=term-missing
 - `select_best_locus_group()` groups by `qseqid` first, picks highest-bitscore reference
 - Returns `(hsps, ref_accession)` tuple (not just list)
 
+## Extraction strategies (Run Extraction tab)
+
+Three selectable strategies drive loci extraction:
+
+1. **BLAST – PCR amplicon refs (relaxed)** — NCBI amplicon refs, skips the CDS completeness gate (`require_complete_cds=False`).
+2. **BLAST – CDS / protein (strict)** — curated CDS/protein refs; enforces `min_cds_pct_of_ref`. ITSx handles rDNA.
+3. **PCR Primers (in-silico PCR)** — `primer_utils.py`. Locate fwd+rev primer binding sites with `blastn-short`, pair them on the same contig with opposite strands, extract the amplicon between. No NCBI reference library needed — useful when accessions are missing or map poorly.
+
+### Primer library (`primer_utils.py` + `data/primers.json`)
+- **Citable, packaged catalogue**: `src/phylofetch/data/primers.json` ships via `[tool.setuptools.package-data]`. Every pair carries `source`, `citation`, `reference_url` (primary literature; rDNA cross-checked vs UNITE). 14 pairs across ITS/SSU/LSU/TEF1/RPB2/TUB2/ACT/CAL/HIS3/GAPDH.
+- **User library**: custom pairs persist in `~/.phylofetch/primers.json`; merged on top of built-in via `get_primer_catalogue()` (user wins on name clash). `save_user_primer` / `load_user_primers` / `delete_user_primer`.
+- **Edit-distance matching**: `max_mismatches` = substitutions + unaligned primer bases (`_effective_mismatch`), so partial/truncated primer alignments can't slip through.
+- **Disambiguation**: `find_primer_amplicons()` returns all candidate sites sorted by edit distance; the UI "Preview & choose binding sites" lets the user override the auto-pick (off-target handling).
+- **Logged + provenanced**: primer search routes through RunManager; `LOCUS_extraction.log` records primer, citation, command, and chosen site.
+- **PRM-001 (data fix)**: built-in `ACT-512F` was a corrupted 35-nt sequence → corrected to canonical `ATGTGCAAGGCCGGTTTCGC` (Carbone & Kohn 1999). Regression-tested.
+
 ## Key design decisions
 
 - **Config path**: `~/.phylofetch/config.json` (not `~/.alternaria_toolkit`)
