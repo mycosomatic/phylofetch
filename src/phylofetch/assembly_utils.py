@@ -151,8 +151,81 @@ def suggest_strain_id(fasta_path: str) -> str:
     """
     name = Path(fasta_path).stem
     for suffix in [
-        "_assembly", "_final", "_polished", "_genome",
+        "_final_EGAP_assembly", "_final_polish_assembly", "_best_assembly",
+        "_assembly", "_final", "_polished", "_genome", "_EGAP",
         "_contigs", "_scaffolds", "_consensus", ".assembly",
     ]:
         name = name.replace(suffix, "")
     return name
+
+
+# ── QUAST report parsing ─────────────────────────────────────────────────────
+
+# Curated QUAST metrics surfaced in the UI, in display order.
+QUAST_DISPLAY_KEYS = [
+    "# contigs", "Largest contig", "Total length", "GC (%)",
+    "N50", "N75", "N90", "L50", "L75", "L90", "# N's per 100 kbp",
+]
+
+
+def _coerce_number(val: str):
+    """Convert a QUAST value string to int or float when possible."""
+    try:
+        if "." in val or "e" in val.lower():
+            return float(val)
+        return int(val)
+    except (ValueError, AttributeError):
+        return val
+
+
+def parse_quast_report(report_path: str) -> dict:
+    """
+    Parse a QUAST ``report.tsv`` into ``{metric: value}``.
+
+    report.tsv is tab-separated: metric name in the first column, value in the
+    second (single-assembly report). The assembly name row is stored under
+    ``assembly_name``. Numeric values are coerced to int/float where possible.
+    """
+    metrics: dict = {}
+    p = Path(report_path)
+    if not p.exists():
+        return metrics
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip() or "\t" not in line:
+            continue
+        parts = line.split("\t")
+        key = parts[0].strip()
+        val = parts[1].strip() if len(parts) > 1 else ""
+        if not key:
+            continue
+        if key.lower() == "assembly":
+            metrics["assembly_name"] = val
+            continue
+        metrics[key] = _coerce_number(val)
+    return metrics
+
+
+def find_quast_report(assembly_path: str) -> Optional[str]:
+    """
+    Locate the QUAST ``report.tsv`` associated with an assembly FASTA.
+
+    EGAP writes it to a sibling directory ``<stem>_quast/`` (some intermediate
+    assemblies use ``<filename>_quast/``). Returns the path to report.tsv if
+    found, else None.
+    """
+    p = Path(assembly_path)
+    parent = p.parent
+    candidates = [
+        parent / f"{p.stem}_quast" / "report.tsv",   # EGAP final: X_quast/report.tsv
+        parent / f"{p.name}_quast" / "report.tsv",    # intermediates: X.fasta_quast/report.tsv
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    # Fallback: any *_quast dir whose name starts with the assembly stem
+    for d in sorted(parent.glob("*_quast")):
+        if d.is_dir() and d.name.startswith(p.stem):
+            rep = d / "report.tsv"
+            if rep.is_file():
+                return str(rep)
+    return None

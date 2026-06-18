@@ -14,8 +14,11 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from phylofetch.assembly_utils import (
+    QUAST_DISPLAY_KEYS,
     find_assemblies_recursive,
+    find_quast_report,
     get_assembly_stats,
+    parse_quast_report,
     suggest_strain_id,
 )
 from phylofetch.config import load_config, save_config
@@ -34,6 +37,15 @@ if "assemblies" not in st.session_state:
 
 def _save():
     save_config({"assemblies": st.session_state.assemblies})
+
+
+def _attach_quast(stats: dict, assembly_path: str) -> dict:
+    """Auto-discover a QUAST report next to the assembly and merge it in."""
+    quast_path = find_quast_report(assembly_path)
+    if quast_path:
+        stats["quast"] = parse_quast_report(quast_path)
+        stats["quast_report"] = quast_path
+    return stats
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -223,7 +235,7 @@ with tab_add:
                         skipped += 1
                         continue
                     with st.spinner(f"Computing stats: {sid}"):
-                        stats = get_assembly_stats(row["Path"])
+                        stats = _attach_quast(get_assembly_stats(row["Path"]), row["Path"])
                     st.session_state.assemblies[sid] = {
                         "strain_id":     sid,
                         "assembly_path": row["Path"],
@@ -277,7 +289,7 @@ with tab_add:
                 )
             else:
                 with st.spinner(f"Computing stats for {strain_id}…"):
-                    stats = get_assembly_stats(assembly_path)
+                    stats = _attach_quast(get_assembly_stats(assembly_path), assembly_path)
                 st.session_state.assemblies[strain_id] = {
                     "strain_id":     strain_id,
                     "assembly_path": assembly_path,
@@ -309,6 +321,7 @@ with tab_list:
                     "N50 (bp)":     s.get("n50", "—"),
                     "GC (%)":       s.get("mean_gc", "—"),
                     "Assembler":    s.get("assembler", "—"),
+                    "QUAST":        "✓" if s.get("quast") else "✗",
                     "R1 linked":    "✓" if d.get("reads_r1") else "✗",
                     "R2 linked":    "✓" if d.get("reads_r2") else "✗",
                 }
@@ -379,6 +392,27 @@ with tab_stats:
             m7.metric("Assembler",       s.get("assembler", "unknown"))
             hcov = s.get("mean_coverage_header", None)
             m8.metric("Header Cov. (×)", hcov if hcov else "n/a")
+
+            # ── QUAST report (auto-discovered alongside the assembly) ──
+            quast = s.get("quast")
+            if quast:
+                st.markdown("---")
+                st.markdown("**QUAST report**")
+                st.caption(f"Source: `{s.get('quast_report', '—')}`")
+                quast_rows = [
+                    {"Metric": k, "Value": quast[k]}
+                    for k in QUAST_DISPLAY_KEYS if k in quast
+                ]
+                if quast_rows:
+                    st.dataframe(pd.DataFrame(quast_rows),
+                                 use_container_width=True, hide_index=True)
+                with st.expander("📄 Full QUAST metrics"):
+                    st.dataframe(
+                        pd.DataFrame(
+                            [{"Metric": k, "Value": v} for k, v in quast.items()]
+                        ),
+                        use_container_width=True, hide_index=True,
+                    )
 
             contigs = s.get("contigs", [])
             if contigs:
