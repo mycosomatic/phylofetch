@@ -109,9 +109,11 @@ with tab_add:
                 unique_ids = suggest_unique_strain_ids(list(found))
                 rows = [
                     {
-                        "Add?":      True,
-                        "Strain ID": sid,
-                        "Path":      p,
+                        "Add?":         True,
+                        "Strain ID":    sid,
+                        "Path":         p,
+                        "BUSCO dir":    "",
+                        "QUAST report": find_quast_report(p) or "",
                     }
                     for p, sid in zip(found, unique_ids)
                 ]
@@ -191,7 +193,7 @@ with tab_add:
             except ValueError:
                 show_short = False
 
-            cols = ["Add?", "Strain ID"]
+            cols = ["Add?", "Strain ID", "BUSCO dir", "QUAST report"]
             if show_short:
                 cols += ["Path (short)", "Path"]
                 st.caption(f"Paths shown relative to `{common_prefix}/` — hover or scroll for full path")
@@ -207,6 +209,12 @@ with tab_add:
                     "Strain ID":    st.column_config.TextColumn(
                         help="Edit to your preferred strain identifier"
                     ),
+                    "BUSCO dir":    st.column_config.TextColumn(
+                        help="Optional: path to a BUSCO or Compleasm run directory for this assembly"
+                    ),
+                    "QUAST report": st.column_config.TextColumn(
+                        help="QUAST report.tsv path — auto-detected when found alongside the assembly"
+                    ),
                     "Path (short)": st.column_config.TextColumn(disabled=True, width="medium"),
                     "Path":         st.column_config.TextColumn(disabled=True, width="large"),
                 },
@@ -217,8 +225,10 @@ with tab_add:
             for _, row in edited_view.iterrows():
                 idx = st.session_state["scan_df"].index[st.session_state["scan_df"]["Path"] == row["Path"]]
                 if len(idx):
-                    st.session_state["scan_df"].loc[idx, "Add?"]      = row["Add?"]
-                    st.session_state["scan_df"].loc[idx, "Strain ID"] = row["Strain ID"]
+                    st.session_state["scan_df"].loc[idx, "Add?"]         = row["Add?"]
+                    st.session_state["scan_df"].loc[idx, "Strain ID"]    = row["Strain ID"]
+                    st.session_state["scan_df"].loc[idx, "BUSCO dir"]    = row["BUSCO dir"]
+                    st.session_state["scan_df"].loc[idx, "QUAST report"] = row["QUAST report"]
 
             # Use the synced master df from here on
             edited = st.session_state["scan_df"]
@@ -254,9 +264,15 @@ with tab_add:
                         continue
                     with st.spinner(f"Computing stats: {sid}"):
                         stats = _attach_quast(get_assembly_stats(row["Path"]), row["Path"])
+                    # Honour user-supplied QUAST override path
+                    custom_quast = str(row.get("QUAST report", "")).strip()
+                    if custom_quast and Path(custom_quast).exists():
+                        stats["quast"] = parse_quast_report(custom_quast)
+                        stats["quast_report"] = custom_quast
                     st.session_state.assemblies[sid] = {
                         "strain_id":     sid,
                         "assembly_path": row["Path"],
+                        "busco_dir":     str(row.get("BUSCO dir", "")).strip(),
                         "reads_r1":      "",
                         "reads_r2":      "",
                         "stats":         stats,

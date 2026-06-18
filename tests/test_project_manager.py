@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from phylofetch.project_manager import (
     ASSEMBLY_MANIFEST_FIELDS,
+    _migrate_assembly_record,
     init_project,
     list_projects,
     load_assembly_registry,
@@ -91,6 +92,61 @@ class TestAssemblyRegistry:
         save_assembly_registry(proj, _REGISTRY)
         lines = (proj / "metadata" / "assembly_manifest.tsv").read_text().splitlines()
         assert len(lines) == 1 + len(_REGISTRY)  # header + 2 rows
+
+
+class TestMigrateAssemblyRecord:
+    def test_nested_record_passes_through_unchanged(self):
+        rec = {"assembly_path": "/d/x.fasta", "stats": {"n50": 100}, "reads_r1": ""}
+        result = _migrate_assembly_record("X", rec)
+        assert result is rec
+
+    def test_flat_record_gets_stats_nested(self):
+        flat = {
+            "assembly_path": "/d/x.fasta",
+            "assembler": "spades",
+            "n50": 900000,
+            "num_contigs": 90,
+            "total_length_mb": 33.1,
+            "gc_percent": 50.8,
+        }
+        result = _migrate_assembly_record("X", flat)
+        assert isinstance(result["stats"], dict)
+        assert result["stats"]["n50"] == 900000
+        assert result["stats"]["mean_gc"] == 50.8
+        assert "gc_percent" not in result["stats"]
+        assert result["assembly_path"] == "/d/x.fasta"
+
+    def test_strain_id_backfilled(self):
+        flat = {"assembly_path": "/d/x.fasta", "n50": 1}
+        result = _migrate_assembly_record("MySample", flat)
+        assert result["strain_id"] == "MySample"
+
+    def test_reads_backfilled_when_absent(self):
+        flat = {"assembly_path": "/d/x.fasta"}
+        result = _migrate_assembly_record("X", flat)
+        assert result["reads_r1"] == ""
+        assert result["reads_r2"] == ""
+
+    def test_roundtrip_migrates_on_load(self, tmp_path):
+        """Save a flat-schema record; load_assembly_registry must normalize it."""
+        flat_registry = {
+            "OldSample": {
+                "assembly_path": "/d/old.fasta",
+                "assembler": "egap",
+                "n50": 500000,
+                "gc_percent": 51.0,
+            }
+        }
+        # Save the raw (un-migrated) JSON directly so it's in the old format.
+        import json
+        meta = (tmp_path / "metadata")
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "assemblies.json").write_text(json.dumps(flat_registry))
+
+        loaded = load_assembly_registry(tmp_path)
+        assert isinstance(loaded["OldSample"]["stats"], dict)
+        assert loaded["OldSample"]["stats"]["mean_gc"] == 51.0
+        assert "gc_percent" not in loaded["OldSample"]["stats"]
 
 
 class TestListProjects:

@@ -1,13 +1,14 @@
 """
 pages/0_Project_Setup.py
 ------------------------
-Initialize a phylofetch workspace and register genome assemblies.
+Create and switch phylofetch workspaces, view registered assemblies,
+check tool availability, and browse the command-run history.
 
-Accepts assemblies from any source — EGAP, SPAdes, Flye, Hifiasm, or any
-other assembler. BUSCO summaries and QUAST reports are linked optionally.
-No upstream pipeline dependency is assumed.
+Assembly import lives in Assembly Manager (page 1), which is the single
+canonical importer. This page handles project lifecycle and tool checks.
 """
 
+import csv
 import sys
 from pathlib import Path
 
@@ -15,12 +16,17 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from phylofetch.assembly_utils import get_assembly_stats, suggest_unique_strain_ids
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
-    DEFAULT_PROJECT_DIR, DEFAULT_PROJECTS_ROOT, RunManager, check_tools,
-    init_project, list_projects, load_assembly_registry, load_json,
-    safe_slug, save_assembly_registry,
+    DEFAULT_PROJECT_DIR,
+    DEFAULT_PROJECTS_ROOT,
+    check_tools,
+    init_project,
+    list_projects,
+    load_assembly_registry,
+    load_json,
+    safe_slug,
+    save_assembly_registry,
 )
 
 st.set_page_config(page_title="Project Setup", page_icon="⚙️", layout="wide")
@@ -37,16 +43,16 @@ if "project_dir" not in st.session_state:
 
 
 def _persist_assemblies(assemblies: dict) -> None:
-    """Save the registry to the global cache AND the active project."""
     save_config({"assemblies": assemblies})
     save_assembly_registry(st.session_state.project_dir, assemblies)
 
-tab_proj, tab_import, tab_tools, tab_history = st.tabs(
-    ["📂 Project", "📥 Import Assemblies", "🔧 Tool Status", "📋 Command History"]
+
+tab_proj, tab_tools, tab_history = st.tabs(
+    ["📂 Project", "🔧 Tool Status", "📋 Command History"]
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Project
+# TAB 1 — Project workspace
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_proj:
     st.subheader("Projects")
@@ -63,7 +69,6 @@ with tab_proj:
 
     col_open, col_new = st.columns(2)
 
-    # ── Open an existing project ──
     with col_open:
         st.markdown("**📂 Open existing**")
         if existing:
@@ -84,10 +89,9 @@ with tab_proj:
         else:
             st.info("No saved projects yet. Create one →")
 
-    # ── Create a new project ──
     with col_new:
         st.markdown("**➕ Create new**")
-        new_name = st.text_input("Project name", placeholder="alternaria_2026",
+        new_name = st.text_input("Project name", placeholder="fungal_2026",
                                  label_visibility="collapsed")
         if st.button("Create project", type="primary"):
             slug = safe_slug(new_name) if new_name.strip() else ""
@@ -130,175 +134,56 @@ with tab_proj:
 
     st.markdown("---")
     st.subheader(f"Registered assemblies ({len(st.session_state.assemblies)})")
+
     if st.session_state.assemblies:
         rows = []
         for sid, v in st.session_state.assemblies.items():
             s = v.get("stats", {}) if isinstance(v.get("stats"), dict) else {}
             rows.append({
-                "ID": sid,
+                "ID":         sid,
+                "Assembler":  s.get("assembler", v.get("assembler", "—")),
+                "N50 (bp)":   s.get("n50", v.get("n50", "—")),
+                "Contigs":    s.get("num_contigs", v.get("num_contigs", "—")),
+                "Size (Mb)":  s.get("total_length_mb", v.get("total_length_mb", "—")),
+                "GC (%)":     s.get("mean_gc", v.get("gc_percent", "—")),
+                "QUAST":      "✓" if s.get("quast") else "",
                 "Assembly path": v.get("assembly_path", ""),
-                "N50": v.get("n50") or s.get("n50", ""),
-                "Contigs": v.get("num_contigs") or s.get("num_contigs", ""),
-                "Size (Mb)": v.get("total_length_mb") or s.get("total_length_mb", ""),
-                "QUAST": "✓" if s.get("quast") else "",
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
         manifest_tsv = Path(project_dir) / "metadata" / "assembly_manifest.tsv"
         if manifest_tsv.exists():
-            with st.expander("📄 Assembly file manifest (all paths)"):
+            with st.expander("📄 Assembly file manifest"):
                 st.caption(f"`{manifest_tsv}`")
                 st.code(manifest_tsv.read_text(), language=None)
-                st.download_button("⬇️ Download manifest.tsv",
-                                   data=manifest_tsv.read_bytes(),
-                                   file_name="assembly_manifest.tsv",
-                                   mime="text/tab-separated-values")
-    else:
-        st.info("No assemblies registered yet. Use the Import tab.")
+                st.download_button(
+                    "⬇️ Download manifest.tsv",
+                    data=manifest_tsv.read_bytes(),
+                    file_name="assembly_manifest.tsv",
+                    mime="text/tab-separated-values",
+                )
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Import Assemblies
-# ══════════════════════════════════════════════════════════════════════════════
-with tab_import:
-    st.subheader("Scan a directory for FASTA assemblies")
-    st.caption(
-        "Point to any directory containing genome assembly FASTAs. "
-        "BUSCO/Compleasm and QUAST paths can be linked per-assembly after import."
-    )
-
-    scan_dir = st.text_input(
-        "Directory to scan",
-        placeholder="/data/my_assemblies/",
-        key="scan_dir",
-    )
-    exts = st.multiselect("FASTA extensions", [".fasta", ".fa", ".fna"],
-                          default=[".fasta", ".fa", ".fna"])
-
-    if st.button("🔍 Scan for assemblies") and scan_dir:
-        if not Path(scan_dir).is_dir():
-            st.error(f"Directory not found: {scan_dir}")
-        else:
-            found_files = []
-            for ext in exts:
-                found_files.extend(Path(scan_dir).rglob(f"*{ext}"))
-            found_files = sorted(set(found_files))
-
-            if not found_files:
-                st.warning("No FASTA files found.")
-            else:
-                st.success(f"Found {len(found_files)} FASTA file(s).")
-                file_strs = [str(fp) for fp in found_files]
-                suggested_ids = suggest_unique_strain_ids(file_strs)
-                rows = []
-                for fp, sid in zip(file_strs, suggested_ids):
-                    rows.append({
-                        "Import?":      True,
-                        "Strain ID":    sid,
-                        "File":         fp,
-                        "BUSCO dir":    "",
-                        "QUAST report": "",
-                    })
-                st.session_state["scan_rows"] = rows
-                st.session_state["scan_editor_ver"] = \
-                    st.session_state.get("scan_editor_ver", 0) + 1
-
-    if "scan_rows" in st.session_state:
-        st.session_state.setdefault("scan_editor_ver", 0)
-
-        n_rows = len(st.session_state["scan_rows"])
-        n_sel = sum(1 for r in st.session_state["scan_rows"] if r.get("Import?"))
-
-        c_all, c_none, c_inv, c_count = st.columns([1, 1, 1, 3])
-        with c_all:
-            if st.button("✅ Select all", key="scan_sel_all", use_container_width=True):
-                for r in st.session_state["scan_rows"]:
-                    r["Import?"] = True
-                st.session_state["scan_editor_ver"] += 1
-                st.rerun()
-        with c_none:
-            if st.button("⬜ Select none", key="scan_sel_none", use_container_width=True):
-                for r in st.session_state["scan_rows"]:
-                    r["Import?"] = False
-                st.session_state["scan_editor_ver"] += 1
-                st.rerun()
-        with c_inv:
-            if st.button("🔄 Invert", key="scan_sel_inv", use_container_width=True):
-                for r in st.session_state["scan_rows"]:
-                    r["Import?"] = not r.get("Import?")
-                st.session_state["scan_editor_ver"] += 1
-                st.rerun()
-        with c_count:
-            st.markdown(f"&nbsp;&nbsp;**{n_sel} / {n_rows}** selected")
-
-        edited = st.data_editor(
-            pd.DataFrame(st.session_state["scan_rows"]),
-            use_container_width=True, hide_index=True,
-            key=f"scan_editor_{st.session_state['scan_editor_ver']}",
-            column_config={
-                "Import?":      st.column_config.CheckboxColumn(),
-                "Strain ID":    st.column_config.TextColumn(),
-                "File":         st.column_config.TextColumn(disabled=True),
-                "BUSCO dir":    st.column_config.TextColumn(
-                    help="Optional: path to BUSCO/Compleasm run directory for this sample"),
-                "QUAST report": st.column_config.TextColumn(
-                    help="Optional: path to QUAST report.tsv for this sample"),
-            },
+        st.markdown("---")
+        to_remove = st.selectbox(
+            "Remove an assembly from registry",
+            [""] + list(st.session_state.assemblies.keys()),
+            key="proj_remove_sel",
         )
-        # Persist manual edits so they survive reruns triggered by the buttons.
-        st.session_state["scan_rows"] = edited.to_dict("records")
-
-        to_import = edited[edited["Import?"] == True]
-        st.write(f"**{len(to_import)}** selected for import")
-
-        if st.button("⬇️ Import selected", type="primary") and not to_import.empty:
-            assemblies = dict(st.session_state.assemblies)
-            imported, skipped = 0, 0
-            for _, row in to_import.iterrows():
-                sid = str(row["Strain ID"]).strip()
-                fp  = str(row["File"]).strip()
-                if not sid or not Path(fp).exists():
-                    skipped += 1
-                    continue
-                if sid in assemblies:
-                    st.warning(f"⚠️  {sid} already registered — skipping. Remove first to reimport.")
-                    skipped += 1
-                    continue
-                with st.spinner(f"Computing stats for {sid}…"):
-                    stats = get_assembly_stats(fp)
-                assemblies[sid] = {
-                    "assembly_path":   fp,
-                    "assembler":       stats["assembler"],
-                    "num_contigs":     stats["num_contigs"],
-                    "total_length_mb": stats["total_length_mb"],
-                    "n50":             stats["n50"],
-                    "gc_percent":      stats["mean_gc"],
-                    "busco_dir":       str(row["BUSCO dir"]).strip() or "",
-                    "quast_report":    str(row["QUAST report"]).strip() or "",
-                }
-                imported += 1
-
-            st.session_state.assemblies = assemblies
-            _persist_assemblies(assemblies)
-            st.success(f"Imported {imported} assemblies. Skipped {skipped}.")
-            if "scan_rows" in st.session_state:
-                del st.session_state["scan_rows"]
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("Remove an assembly")
-    if st.session_state.assemblies:
-        to_remove = st.selectbox("Select assembly to remove",
-                                 [""] + list(st.session_state.assemblies.keys()))
-        if to_remove and st.button(f"🗑️ Remove {to_remove}"):
+        if to_remove and st.button(f"🗑️ Remove '{to_remove}'", key="proj_remove_btn"):
             assemblies = dict(st.session_state.assemblies)
             del assemblies[to_remove]
             st.session_state.assemblies = assemblies
             _persist_assemblies(assemblies)
             st.success(f"Removed {to_remove}.")
             st.rerun()
+    else:
+        st.info(
+            "No assemblies registered yet. "
+            "Use the **Assembly Manager** page to import assemblies."
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Tool Status
+# TAB 2 — Tool Status
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_tools:
     st.subheader("Tool availability")
@@ -313,7 +198,10 @@ with tab_tools:
         "trimAl":  tp.get("trimal", "trimal"),
     }
     optional_tools = {
-        "IQ-TREE2": tp.get("iqtree2", "iqtree2"),
+        "IQ-TREE2":         tp.get("iqtree2", "iqtree2"),
+        "BUSCO":            tp.get("busco", "busco"),
+        "Compleasm":        tp.get("compleasm", "compleasm"),
+        "NCBI Datasets":    tp.get("datasets", "datasets"),
     }
 
     if st.button("🔍 Check tools"):
@@ -327,7 +215,6 @@ with tab_tools:
                 "Version": s.version or "—",
                 "Path":    s.resolved_path or "—",
             })
-        # MACSE JAR
         macse_jar = tp.get("macse_jar", "")
         rows.append({
             "Tool":    "MACSE (JAR)",
@@ -342,11 +229,13 @@ with tab_tools:
             if not check_tools({label: exe})[0].available
         ]
         if missing_core:
-            st.warning(f"Missing core tools: {', '.join(missing_core)}. "
-                       f"Install via conda: `conda install -c bioconda blast itsx mafft trimal`")
+            st.warning(
+                f"Missing core tools: {', '.join(missing_core)}. "
+                "Install via conda: `conda install -c bioconda blast itsx mafft trimal`"
+            )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — Command History
+# TAB 3 — Command History
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
     project_dir = st.session_state.project_dir
@@ -358,7 +247,6 @@ with tab_history:
     if not history_tsv.exists():
         st.info("No command history yet. Run an extraction or alignment to populate this.")
     else:
-        import csv
         rows = []
         with open(history_tsv, newline="") as f:
             reader = csv.DictReader(f, delimiter="\t")

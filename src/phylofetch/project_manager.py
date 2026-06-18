@@ -282,9 +282,42 @@ def save_assembly_registry(project_dir: str | Path,
     return root
 
 
+# Stats fields written by the old page-0 flat schema (before consolidation).
+_FLAT_STAT_KEYS = frozenset({
+    "assembler", "num_contigs", "total_length_bp", "total_length_mb",
+    "n50", "l50", "largest_contig", "mean_gc", "gc_percent",
+    "mean_coverage_header", "contigs", "quast", "quast_report",
+})
+
+
+def _migrate_assembly_record(sid: str, record: dict) -> dict:
+    """
+    Normalize legacy flat-format records to the nested-stats schema.
+
+    Old page-0 schema stored stats at the top level; canonical schema wraps
+    them under ``"stats"``. Records already in the canonical form pass through.
+    Also renames ``gc_percent`` → ``mean_gc`` for consistency with
+    ``assembly_utils.get_assembly_stats()`` output.
+    """
+    if isinstance(record.get("stats"), dict):
+        return record
+    stats = {k: v for k, v in record.items() if k in _FLAT_STAT_KEYS}
+    clean = {k: v for k, v in record.items() if k not in _FLAT_STAT_KEYS}
+    if "gc_percent" in stats and "mean_gc" not in stats:
+        stats["mean_gc"] = stats.pop("gc_percent")
+    else:
+        stats.pop("gc_percent", None)
+    clean["stats"] = stats
+    clean.setdefault("strain_id", sid)
+    clean.setdefault("reads_r1", "")
+    clean.setdefault("reads_r2", "")
+    return clean
+
+
 def load_assembly_registry(project_dir: str | Path) -> dict:
     """Load a project's saved assembly registry (empty dict if none)."""
-    return load_json(Path(project_dir) / "metadata" / "assemblies.json", {})
+    raw = load_json(Path(project_dir) / "metadata" / "assemblies.json", {})
+    return {sid: _migrate_assembly_record(sid, rec) for sid, rec in raw.items()}
 
 
 def list_projects(projects_root: str | Path | None = None) -> list[dict]:
