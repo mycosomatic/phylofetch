@@ -675,11 +675,15 @@ with tab_run:
                     sprog = st.progress(0)
                     for i, (s, l) in enumerate(jobs, 1):
                         asm = st.session_state.assemblies[s]["assembly_path"]
-                        scan[f"{s}|{l}"] = find_primer_amplicons(
-                            asm, primer_assignments[l],
-                            max_mismatches=max_mm, blastn_bin=blastn_bin,
-                            manager=scan_mgr, action=f"primer_scan_{l}_{s}",
-                        )
+                        try:
+                            scan[f"{s}|{l}"] = find_primer_amplicons(
+                                asm, primer_assignments[l],
+                                max_mismatches=max_mm, blastn_bin=blastn_bin,
+                                manager=scan_mgr, action=f"primer_scan_{l}_{s}",
+                            )
+                        except ValueError as exc:
+                            scan[f"{s}|{l}"] = []
+                            st.warning(f"`{s}` · {l}: {exc}")
                         sprog.progress(i / max(len(jobs), 1))
                     st.session_state["primer_scan"] = scan
 

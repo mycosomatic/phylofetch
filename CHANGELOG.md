@@ -5,6 +5,30 @@
 
 ## 2026-06-19
 
+- **Degenerate-primer handling for in-silico PCR (D-009) + Matheny RPB1/RPB2 primers
+  (D-010).** Established empirically (blastn 2.14.1) that NCBI BLAST does *not* resolve IUPAC
+  degenerate codes: a degenerate primer both fails to **seed** (`blastn-short` needs an exact
+  7-bp word; e.g. `fRPB2-5F`'s longest concrete run is 5 → silently 0 hits) and is **mis-scored**
+  (a biologically-compatible `Y`-over-`C` counts as a mismatch, same as an incompatible
+  `R`-over-`C`), so degenerate barcodes were silently under-/non-recovered.
+  - `primer_utils.py`: new `expand_degenerate_primer` / `degeneracy_count` /
+    `IUPAC_CODES` / `MAX_PRIMER_EXPANSION`. `find_primer_amplicons` now expands fwd+rev into
+    concrete oligos, searches each as `FWD_*`/`REV_*` through the existing `blastn-short` +
+    RunManager path, buckets by prefix, and **collapses variant duplicates** to one candidate
+    per amplicon (lowest edit-distance kept). Over-cap (>8192 variants) raises `ValueError`;
+    `run_primer_extraction` reports it as a "primer too degenerate" status and the per-locus
+    log records fwd/rev variant counts. Fixes the already-shipped degenerate primers too.
+  - `pages/2_Loci_Extraction.py`: the binding-site preview scan catches the over-cap case
+    and shows a per-strain `st.warning` instead of crashing.
+  - `data/primers.json`: **two new cited pairs** — RPB1 `RPB1-Af`/`RPB1-Cr` (Stiller & Hall
+    1997 + Matheny et al. 2002; 400–2000 bp) and RPB2 `fRPB2-5F`/`bRPB2-11R1` (Liu et al.
+    1999 + Matheny et al. 2007; 1200–4000 bp), pairing the outermost fwd/rev per gene for the
+    largest in-silico span (not bound by wet-lab PCR). Fills the previously primer-less
+    `RPB1` locus. Catalogue now **16 pairs**.
+  - Tests: `tests/test_primer_utils.py` — expansion correctness, FWD/REV bucketing + dedup,
+    over-cap status, the two new pairs, and a `blastn`-guarded end-to-end proof that the
+    degenerate RPB2 pair now finds an amplicon the raw primer cannot seed. **155 passing**
+    (was 139).
 - **Custom-locus primers in PCR Primer mode (`pages/2_Loci_Extraction.py`).** Added an
   "➕ Custom locus" section so in-silico PCR can target a locus not in the catalogue
   (name + fwd/rev + size window; IUPAC degenerate codes allowed), optionally saved to the

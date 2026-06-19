@@ -168,3 +168,74 @@ Format for each entry:
 - **Status:** active. Implemented 2026-06-19; 23 network-free + binary-guarded tests
   (`tests/test_exonerate_utils.py`), full suite 139 passing. `extract_from_hsps` retained
   as documented fallback per the working agreement.
+
+### D-009 (2026-06-19) — Degenerate-primer expansion for the in-silico PCR (BLAST) search
+- **Decision:** Make the primer-based locus search correctly handle IUPAC degenerate
+  bases by **expanding each primer into the full set of concrete oligonucleotides it
+  represents** (`expand_degenerate_primer` / `degeneracy_count` in `primer_utils.py`),
+  writing every variant as a separate `FWD_*` / `REV_*` query, searching them together
+  through the existing `blastn-short` + RunManager path, then collapsing variant
+  duplicates back to one candidate per amplicon (lowest edit-distance pairing kept). A
+  non-degenerate primer expands to a single variant, so concrete and degenerate primers
+  share one code path. A `MAX_PRIMER_EXPANSION = 8192` cap guards pathological input
+  (e.g. a primer full of N's): over-cap raises `ValueError`, surfaced by
+  `run_primer_extraction` as a "primer too degenerate to search" status and by the
+  binding-site preview as a per-strain warning (never a silent empty result). The
+  per-locus extraction log records the fwd/rev variant counts.
+- **Why:** Empirically verified (blastn 2.14.1) that NCBI BLAST does **not** resolve IUPAC
+  codes, and degenerate primers fail two ways: **(1) seeding** — `blastn-short` requires an
+  exact word match (`word_size 7`), so a primer with no 7-bp run of plain ACGT seeds
+  *nothing* and silently returns no hits (e.g. the existing `fRPB2-5F`, longest concrete
+  run = 5 → 0 hits at word_size 7); **(2) scoring** — a degenerate base is counted as a
+  mismatch even when biologically compatible (`Y` over a template `C` scores identically to
+  an incompatible `R` over `C`), so every degenerate position eats the `max_mismatches`
+  budget and drags the hit under the `perc_identity` floor. The net effect was silent
+  under-/non-recovery of exactly the protein-coding barcodes that are *most* degenerate
+  (RPB1/RPB2/TEF1). Expansion fixes both at once and, because each variant is concrete,
+  makes the residual mismatch count reflect *real* biological mismatch against the
+  best-matching variant — and it repairs the already-shipped degenerate primers too. This
+  was the prerequisite for adding the heavily-degenerate Matheny-lab RPB1/RPB2 primers
+  (some with 2 N's + multiple R's); adding them without it would have shipped cited primers
+  that silently don't work, contra the working agreement's scientific-soundness rule.
+- **Alternatives considered:** (a) Lower the BLAST `word_size` and inflate `max_mismatches`
+  by the degeneracy — rejected: fixes seeding but not scoring, and a biologically-compatible
+  degenerate position should not count as a mismatch at all. (b) Swap the engine for EMBOSS
+  `primersearch`, which understands IUPAC natively — rejected for now: new external
+  dependency + a larger rewrite that discards the existing edit-distance / provenance
+  machinery; revisitable. (c) Custom IUPAC-aware Python sliding-window matcher — rejected:
+  reimplements alignment, loses the blastn/RunManager provenance, slower on large
+  assemblies. (d) Add the Matheny primers and only document the limitation — rejected by the
+  user in favour of fixing the engine.
+- **Status:** active. Implemented 2026-06-19; expansion + bucketing + dedup + over-cap
+  handling with mocked and `blastn`-guarded end-to-end tests in `tests/test_primer_utils.py`
+  (51 primer tests; full suite 155 passing, was 139). Paired with the catalogue additions
+  below.
+
+### D-010 (2026-06-19) — Matheny-lab RPB1/RPB2 primers added as largest-span in-silico pairs
+- **Decision:** Add two built-in, fully-cited pairs from the Matheny lab primer compilation
+  (https://wordpress.clarku.edu/polypeet/datasets/primer-information/): **RPB1**
+  `RPB1-Af` (Stiller & Hall 1997) / `RPB1-Cr` (Matheny et al. 2002), and **RPB2**
+  `fRPB2-5F` (Liu et al. 1999; domain 5) / `bRPB2-11R1` (Matheny et al. 2007; domain 11).
+  The Matheny page lists primers as a *menu* for two nested PCRs, not fixed pairs; because
+  in-silico extraction from an assembly is **not constrained by wet-lab PCR**, we pair the
+  **outermost forward and outermost reverse** of each gene to span the largest region, with
+  deliberately wide amplicon windows (RPB1 400–2000 bp; RPB2 1200–4000 bp) sized to include
+  introns rather than the wet-lab product. `reference_url` points at the Matheny
+  compilation page (the verifiable source the user supplied) with full primary-literature
+  citations in the `citation` field, rather than a hand-typed DOI we could not confirm.
+  This also fills a real gap: `RPB1` previously had **no** primer pair in the catalogue.
+- **Why:** RPB1 and RPB2 are core protein-coding phylogenetic markers for Agaricales /
+  Basidiomycota (and broadly across fungi); the Matheny set is the standard source. Pairing
+  outermost-to-outermost maximises recovered sequence for tree-building, which is the goal
+  in silico, and the binding-site preview/disambiguation already lets the user cull any
+  off-target pairing that a wide window admits. Depends on D-009 — these primers are heavily
+  degenerate and would silently fail without expansion.
+- **Alternatives considered:** (a) Encode the faithful nested wet-lab pairs (domains 5–7 and
+  7–11 separately) — rejected per the user's steer to default to the largest extraction.
+  (b) `reference_url` as a per-primer DOI — partially rejected to avoid shipping an
+  unverified DOI; the page URL is exact provenance and the citations carry the papers.
+  (c) Add the full menu of individual primers — deferred; the two largest-span pairs cover
+  the stated need and the per-locus "Custom…" entry covers any other combination.
+- **Status:** active. Catalogue now 16 built-in pairs; sequences regression-tested
+  (`TestMathenyRPBPairs`). Candidate tie-break order (smallest-first) left unchanged pending
+  user confirmation — see open question in the session note.
