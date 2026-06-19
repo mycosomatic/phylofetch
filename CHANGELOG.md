@@ -5,6 +5,14 @@
 
 ## 2026-06-19
 
+- **Bug fix — PCR Primer mode hid reference-less loci (`pages/2_Loci_Extraction.py`).** The
+  Loci selector gated coding loci on `count_refs(l) > 0` for *all* strategies, so loci with
+  no NCBI references (RPB2, TUB2, ACT, CAL, GAPDH, HIS3) were unselectable — even in PCR
+  Primer mode, which does in-silico PCR and needs no references at all. Now the reference
+  gate applies only to the BLAST / Exonerate strategies; primer mode offers every coding
+  locus (built-in primers exist for RPB2/TUB2/ACT/CAL/GAPDH/HIS3/TEF1, and Custom… covers
+  the rest). The "No refs yet" caption now notes refs are needed for BLAST/Exonerate, not
+  primers.
 - **Exonerate frame-safe CDS + gene-of-interest extraction (D-008, addresses RM-002).**
   New module `src/phylofetch/exonerate_utils.py`: `run_exonerate` (RunManager-logged),
   `parse_exonerate_gff` (verbatim Exonerate 2.4.0 GFF + `--ryo %tcs` parsing, multi-result

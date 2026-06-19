@@ -397,15 +397,21 @@ with tab_run:
                                      label_visibility="collapsed")
     with col_loc:
         st.markdown("**Loci**")
-        avail_coding = [l for l in LOCI_CODING if count_refs(l) > 0]
-        missing      = [l for l in LOCI_CODING if count_refs(l) == 0]
+        # PCR Primer mode does in-silico PCR and needs no NCBI references, so offer
+        # every coding locus; BLAST / Exonerate need references, so gate on those.
+        if use_primers:
+            coding_opts, missing = LOCI_CODING, []
+        else:
+            coding_opts = [l for l in LOCI_CODING if count_refs(l) > 0]
+            missing     = [l for l in LOCI_CODING if count_refs(l) == 0]
+        loci_opts = ["ITS", "LSU", "SSU"] + coding_opts
         sel_loci = st.multiselect(
-            "Loci", ["ITS", "LSU", "SSU"] + avail_coding,
-            default=["ITS", "LSU", "SSU"] + avail_coding,
+            "Loci", loci_opts, default=loci_opts,
             label_visibility="collapsed",
         )
         if missing:
-            st.caption(f"⚠️ No refs yet for: {', '.join(missing)}")
+            st.caption(f"⚠️ No refs yet for: {', '.join(missing)} "
+                       "(needed for BLAST / Exonerate, not for PCR primers)")
 
     with st.expander("⚙️ Settings"):
         ca, cb, cc = st.columns(3)
