@@ -79,6 +79,26 @@ LOCI_RDNA   = ["ITS", "ITS_full", "ITS1", "ITS2", "LSU", "SSU"]
 LOCI_CODING = [k for k in LOCUS_CATALOGUE if k not in ("ITS", "LSU", "SSU")]
 ALL_LOCI    = ["ITS", "LSU", "SSU"] + LOCI_CODING
 
+# ── Extraction strategy — page-level control, always visible ──────────────────
+ref_strategy = st.radio(
+    "Extraction strategy",
+    ["BLAST – PCR amplicon refs (relaxed)", "BLAST – CDS / protein (strict)", "PCR Primers"],
+    horizontal=True,
+    help=(
+        "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate. "
+        "BLAST (strict): curated CDS / protein refs — enforces CDS length. "
+        "PCR Primers: locate amplicons directly by primer binding sites (no NCBI refs needed)."
+    ),
+)
+require_cds = ref_strategy.startswith("BLAST – CDS")
+use_primers = ref_strategy == "PCR Primers"
+
+if use_primers:
+    st.info(
+        "🔬 **PCR Primer mode** — amplicons are located by primer binding sites in each assembly. "
+        "No NCBI reference library is needed. Assign primer pairs to loci in the **Run Extraction** tab."
+    )
+
 tab_refs, tab_run, tab_results = st.tabs(
     ["📚 Reference Library", "▶️ Run Extraction", "📂 Results"]
 )
@@ -88,11 +108,16 @@ tab_refs, tab_run, tab_results = st.tabs(
 # TAB 1 — Reference Library
 # ════════════════════════════════════════════════════════════════════════════
 with tab_refs:
+    if use_primers:
+        st.info(
+            "💡 **PCR Primer mode is active** — no NCBI reference library is needed. "
+            "Switch to a BLAST strategy above to manage reference sequences, "
+            "or go to the **Run Extraction** tab to assign primer pairs."
+        )
 
     st.caption(
-        "Reference sequences are used only by the **BLAST** extraction strategies. "
-        "If you plan to extract with **PCR Primers**, you can skip this tab and go "
-        "straight to **Run Extraction**."
+        "Reference sequences are used by the **BLAST** extraction strategies. "
+        "In **PCR Primer** mode this tab is not needed — assign primer pairs in Run Extraction."
     )
 
     with st.expander("🔑 NCBI Entrez email (required for fetching)", expanded=not bool(ncbi_email)):
@@ -293,26 +318,6 @@ with tab_run:
     if not st.session_state.assemblies:
         st.warning("No assemblies registered. Use the Assembly Manager page to import assemblies first.")
         st.stop()
-
-    # ── Extraction strategy (choose first — it drives the whole workflow) ──────
-    ref_strategy = st.radio(
-        "Extraction strategy",
-        ["BLAST – PCR amplicon refs (relaxed)", "BLAST – CDS / protein (strict)", "PCR Primers"],
-        horizontal=True,
-        help=(
-            "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate. "
-            "BLAST (strict): curated CDS / protein refs — enforces CDS length. "
-            "PCR Primers: locate amplicons directly by primer binding sites (no NCBI refs needed)."
-        ),
-    )
-    require_cds = ref_strategy.startswith("BLAST – CDS")
-    use_primers = ref_strategy == "PCR Primers"
-    if use_primers:
-        st.info(
-            "🔬 **PCR Primer mode** — amplicons are located directly by primer binding sites in "
-            "each assembly. No NCBI reference library is needed; assign a primer pair to each "
-            "locus below."
-        )
 
     col_str, col_loc = st.columns(2)
     with col_str:
