@@ -82,6 +82,41 @@ LOCI_RDNA   = ["ITS", "ITS_full", "ITS1", "ITS2", "LSU", "SSU"]
 LOCI_CODING = [k for k in LOCUS_CATALOGUE if k not in ("ITS", "LSU", "SSU")]
 ALL_LOCI    = ["ITS", "LSU", "SSU"] + LOCI_CODING
 
+# ── Extraction strategy — page-level control, visible on every tab ────────────
+# (Drives the whole workflow; placed above the tabs so it's never hidden.)
+ref_strategy = st.radio(
+    "Extraction strategy",
+    ["BLAST – PCR amplicon refs (relaxed)",
+     "Coding loci – Exonerate (frame-safe)",
+     "PCR Primers"],
+    horizontal=True,
+    help=(
+        "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate; "
+        "genomic amplicon is the product. "
+        "Exonerate: tblastn/blastn narrows to the best contig, then Exonerate spliced "
+        "alignment (protein2genome / coding2genome) gives a frame-safe CDS with accurate "
+        "exon/intron boundaries — preferred for protein-coding loci (D-008). "
+        "PCR Primers: locate amplicons directly by primer binding sites (no NCBI refs needed)."
+    ),
+)
+use_exonerate = ref_strategy.startswith("Coding loci")
+require_cds = use_exonerate            # frame-safe strategy ⇒ enforce CDS gate on fallback
+use_primers = ref_strategy == "PCR Primers"
+if use_exonerate:
+    st.info(
+        "🧬 **Exonerate mode** — for each coding locus, BLAST first narrows to the best "
+        "contig, then Exonerate aligns the reference *protein* (`protein2genome`) or "
+        "*CDS* (`coding2genome`) across intron boundaries to recover a translatable, "
+        "frame-checked CDS. rDNA loci (ITS/LSU/SSU) still go through ITSx. You can also "
+        "extract an arbitrary **gene of interest** in the Run Extraction tab."
+    )
+if use_primers:
+    st.info(
+        "🔬 **PCR Primer mode** — amplicons are located directly by primer binding sites in "
+        "each assembly. No NCBI reference library is needed; assign a primer pair to each "
+        "locus in the Run Extraction tab."
+    )
+
 tab_refs, tab_run, tab_results = st.tabs(
     ["📚 Reference Library", "▶️ Run Extraction", "📂 Results"]
 )
@@ -91,11 +126,16 @@ tab_refs, tab_run, tab_results = st.tabs(
 # TAB 1 — Reference Library
 # ════════════════════════════════════════════════════════════════════════════
 with tab_refs:
+    if use_primers:
+        st.info(
+            "💡 **PCR Primer mode is active** — no NCBI reference library is needed. "
+            "Switch to a BLAST or Exonerate strategy above to manage reference sequences, "
+            "or go to the **Run Extraction** tab to assign primer pairs."
+        )
 
     st.caption(
-        "Reference sequences are used only by the **BLAST** extraction strategies. "
-        "If you plan to extract with **PCR Primers**, you can skip this tab and go "
-        "straight to **Run Extraction**."
+        "Reference sequences are used by the **BLAST** and **Exonerate** strategies. "
+        "In **PCR Primer** mode this tab is not needed — assign primer pairs in Run Extraction."
     )
 
     with st.expander("🔑 NCBI Entrez email (required for fetching)", expanded=not bool(ncbi_email)):
@@ -343,40 +383,6 @@ with tab_run:
     if not st.session_state.assemblies:
         st.warning("No assemblies registered. Use the Assembly Manager page to import assemblies first.")
         st.stop()
-
-    # ── Extraction strategy (choose first — it drives the whole workflow) ──────
-    ref_strategy = st.radio(
-        "Extraction strategy",
-        ["BLAST – PCR amplicon refs (relaxed)",
-         "Coding loci – Exonerate (frame-safe)",
-         "PCR Primers"],
-        horizontal=True,
-        help=(
-            "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate; "
-            "genomic amplicon is the product. "
-            "Exonerate: tblastn/blastn narrows to the best contig, then Exonerate spliced "
-            "alignment (protein2genome / coding2genome) gives a frame-safe CDS with accurate "
-            "exon/intron boundaries — preferred for protein-coding loci (D-008). "
-            "PCR Primers: locate amplicons directly by primer binding sites (no NCBI refs needed)."
-        ),
-    )
-    use_exonerate = ref_strategy.startswith("Coding loci")
-    require_cds = use_exonerate            # frame-safe strategy ⇒ enforce CDS gate on fallback
-    use_primers = ref_strategy == "PCR Primers"
-    if use_exonerate:
-        st.info(
-            "🧬 **Exonerate mode** — for each coding locus, BLAST first narrows to the best "
-            "contig, then Exonerate aligns the reference *protein* (`protein2genome`) or "
-            "*CDS* (`coding2genome`) across intron boundaries to recover a translatable, "
-            "frame-checked CDS. rDNA loci (ITS/LSU/SSU) still go through ITSx. You can also "
-            "extract an arbitrary **gene of interest** below."
-        )
-    if use_primers:
-        st.info(
-            "🔬 **PCR Primer mode** — amplicons are located directly by primer binding sites in "
-            "each assembly. No NCBI reference library is needed; assign a primer pair to each "
-            "locus below."
-        )
 
     col_str, col_loc = st.columns(2)
     with col_str:
