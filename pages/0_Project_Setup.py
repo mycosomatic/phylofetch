@@ -149,7 +149,13 @@ with tab_proj:
                 "QUAST":      "✓" if s.get("quast") else "",
                 "Assembly path": v.get("assembly_path", ""),
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        df_reg = pd.DataFrame(rows)
+        # Numeric columns fall back to "—" when a stat is missing, mixing int/float
+        # and str in one column — pyArrow can't serialise that, so stringify them.
+        for col in ("N50 (bp)", "Contigs", "Size (Mb)", "GC (%)"):
+            if col in df_reg.columns:
+                df_reg[col] = df_reg[col].astype(str)
+        st.dataframe(df_reg, width="stretch", hide_index=True)
 
         manifest_tsv = Path(project_dir) / "metadata" / "assembly_manifest.tsv"
         if manifest_tsv.exists():
@@ -222,7 +228,7 @@ with tab_tools:
             "Version": "—",
             "Path":    macse_jar or "—",
         })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         missing_core = [
             label for label, exe in core_tools.items()
@@ -258,7 +264,7 @@ with tab_history:
             df = pd.DataFrame(rows)
             df_display = df[["started_at", "module", "action", "returncode", "command"]].copy()
             df_display["returncode"] = df_display["returncode"].astype(str)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width="stretch", hide_index=True)
 
             st.markdown("---")
             st.subheader("Inspect a run folder")

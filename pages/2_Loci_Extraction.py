@@ -35,6 +35,7 @@ from phylofetch.ncbi_utils import (
     count_refs,
     delete_from_library,
     fetch_and_store,
+    load_ref_meta,
     load_ref_records,
     locus_ref_fasta,
     search_ncbi_nucleotide,
@@ -168,6 +169,21 @@ with tab_refs:
 
         max_hits = st.slider("Max results", 5, 50, 20)
 
+        type_mode_label = st.radio(
+            "Type material",
+            ["Prefer type", "All", "Type only"],
+            horizontal=True,
+            help=(
+                "Prefer type: fetch all hits, flag type-derived ones and sort them first "
+                "(use this, then fall back to the best non-type hits when type material is "
+                "sparse — common for closely related species). "
+                "All: no preference, type still flagged. "
+                "Type only: restrict to NCBI 'sequence from type material'."
+            ),
+        )
+        type_mode = {"Prefer type": "prefer", "All": "all",
+                     "Type only": "type_only"}[type_mode_label]
+
         if st.button("🔍 Search NCBI", type="primary"):
             if not ncbi_email:
                 st.error("Set NCBI email first.")
@@ -175,7 +191,7 @@ with tab_refs:
                 with st.spinner(f"Searching NCBI {db_choice}…"):
                     try:
                         fn = search_ncbi_protein if db_choice == "protein" else search_ncbi_nucleotide
-                        hits = fn(gene_query, org_query, max_results=max_hits)
+                        hits = fn(gene_query, org_query, max_results=max_hits, type_mode=type_mode)
                         st.session_state[f"hits_{locus_name}"] = hits
                         st.session_state[f"searched_{locus_name}"] = True
                     except Exception as e:
@@ -197,18 +213,26 @@ with tab_refs:
             st.success(f"{len(hits)} result(s).")
             existing = accessions_in_library(locus_name)
             df_hits  = pd.DataFrame(hits)
+            if "is_type" not in df_hits.columns:
+                df_hits["is_type"] = False
+            df_hits["Type"] = df_hits["is_type"].apply(lambda t: "✓ type" if t else "")
             df_hits["In library"] = df_hits["accession"].apply(
                 lambda a: "✓" if a in existing or a.split(".")[0] in existing else ""
             )
             df_hits["Add?"] = df_hits["In library"].apply(lambda x: x == "")
 
             edited = st.data_editor(
-                df_hits[["Add?", "accession", "organism", "title", "length", "In library"]],
-                use_container_width=True, hide_index=True,
+                df_hits[["Add?", "accession", "organism", "Type", "title", "length", "In library"]],
+                width="stretch", hide_index=True,
                 column_config={
                     "Add?": st.column_config.CheckboxColumn(),
                     "accession": st.column_config.TextColumn(disabled=True),
                     "organism":  st.column_config.TextColumn(disabled=True),
+                    "Type":      st.column_config.TextColumn(
+                        disabled=True,
+                        help="Flagged via NCBI 'sequence from type material'. "
+                             "Exact kind (holotype/ex-type/…) is recorded on fetch.",
+                    ),
                     "title":     st.column_config.TextColumn(disabled=True),
                     "length":    st.column_config.NumberColumn(disabled=True),
                     "In library": st.column_config.TextColumn(disabled=True),
@@ -229,6 +253,7 @@ with tab_refs:
                             added, skipped, errors = fetch_and_store(
                                 to_add, locus_name, db=db_choice,
                                 custom_label=custom_label if use_label and custom_label else None,
+                                query=f"{gene_query} AND {org_query} [{db_choice}, type_mode={type_mode}]",
                             )
                         st.success(f"Added: {added} · Already present: {skipped}")
                         for e in errors:
@@ -258,17 +283,40 @@ with tab_refs:
     st.subheader(f"{locus_name} library  ({n_refs} sequences)")
     if n_refs > 0:
         records = load_ref_records(locus_name)
-        lib_rows = [{"ID": r.id,
-                     "Description": (r.description.replace(r.id, "").strip())[:80],
-                     "Length (bp/aa)": len(r.seq),
-                     "Remove?": False}
-                    for r in records]
+        meta = load_ref_meta(locus_name)
+
+        def _meta_for(rec_id: str):
+            return meta.get(rec_id) or meta.get(rec_id.split(".")[0])
+
+        lib_rows = []
+        for r in records:
+            m = _meta_for(r.id)
+            lib_rows.append({
+                "ID": r.id,
+                "Organism": m.organism if m else "",
+                "Strain/voucher": (
+                    (m.strain or m.culture_collection or m.specimen_voucher) if m else ""
+                ),
+                "Type": (m.type_kind if (m and m.is_type) else ""),
+                "Length (bp/aa)": len(r.seq),
+                "Remove?": False,
+            })
+        n_with_meta = sum(1 for row in lib_rows if row["Organism"])
+        if n_with_meta < len(lib_rows):
+            st.caption(
+                f"ℹ️ {len(lib_rows) - n_with_meta} sequence(s) predate the metadata sidecar — "
+                "re-fetch them to populate Organism / Strain / Type."
+            )
         lib_df = st.data_editor(
-            pd.DataFrame(lib_rows), use_container_width=True, hide_index=True,
+            pd.DataFrame(lib_rows), width="stretch", hide_index=True,
             column_config={
                 "Remove?": st.column_config.CheckboxColumn(),
                 "ID": st.column_config.TextColumn(disabled=True),
-                "Description": st.column_config.TextColumn(disabled=True),
+                "Organism": st.column_config.TextColumn(disabled=True),
+                "Strain/voucher": st.column_config.TextColumn(disabled=True),
+                "Type": st.column_config.TextColumn(
+                    disabled=True, help="Normalised /type_material kind (e.g. holotype, ex-holotype)."
+                ),
                 "Length (bp/aa)": st.column_config.NumberColumn(disabled=True),
             },
         )
@@ -514,7 +562,7 @@ with tab_run:
                             "len(bp)": c["amp_len"], "fwd_mm": c["fwd_edit"],
                             "rev_mm": c["rev_edit"], "total_mm": c["total_edit"],
                         } for i, c in enumerate(cands)]),
-                            hide_index=True, use_container_width=True)
+                            hide_index=True, width="stretch")
                         opts = [
                             f"{i}: {c['contig']} {c['strand']} "
                             f"{c['amp_start']}..{c['amp_end']} ({c['amp_len']} bp, mm {c['total_edit']})"
@@ -796,11 +844,17 @@ with tab_results:
 
         df_sum = pd.DataFrame(rows).set_index("Strain")
         df_sum = df_sum.loc[:, (df_sum > 0).any()]
+
+        def _recovery_cell(v) -> str:
+            # Pastel background + dark text: stays legible on both light and dark
+            # themes (a bare background color renders as white-on-pastel in dark mode).
+            if v > 0:
+                return "background-color:#c8e6c9; color:#1b5e20; font-weight:600"
+            return "background-color:#ffcdd2; color:#b71c1c; font-weight:600"
+
         st.dataframe(
-            df_sum.style.map(
-                lambda v: "background-color:#c8e6c9" if v > 0 else "background-color:#ffcdd2"
-            ),
-            use_container_width=True,
+            df_sum.style.map(_recovery_cell),
+            width="stretch",
         )
 
     st.markdown("---")
@@ -845,7 +899,7 @@ with tab_results:
                             meta_rows = [{"Field": k, "Value": v}
                                          for k, v in desc_fields.items()]
                             st.dataframe(pd.DataFrame(meta_rows),
-                                         use_container_width=True, hide_index=True)
+                                         width="stretch", hide_index=True)
 
                 # Exon / intron structure from GFF3
                 gff_path = locus_dir / f"{locus}.gff3"
@@ -866,7 +920,7 @@ with tab_results:
                     if exon_rows:
                         st.markdown("**Exon structure:**")
                         st.dataframe(pd.DataFrame(exon_rows),
-                                     use_container_width=True, hide_index=True)
+                                     width="stretch", hide_index=True)
 
                 # Intron splice sites
                 intron_fp = locus_dir / f"{locus}_introns.fasta"
@@ -898,7 +952,7 @@ with tab_results:
                 col_aln1, col_aln2 = st.columns([1, 1])
                 with col_aln1:
                     if st.button(f"Show BLAST alignment ({locus})",
-                                 key=f"aln_{browse_strain}_{locus}"):
+                                 key=f"btn_aln_{browse_strain}_{locus}"):
                         ref_fa = locus_ref_fasta(locus)
                         if not os.path.exists(ref_fa) or os.path.getsize(ref_fa) == 0:
                             st.warning("No reference library for this locus.")
@@ -919,12 +973,12 @@ with tab_results:
                                         evalue=1e-10,
                                     )
                                 if rc == 0 and Path(aln_path).exists():
-                                    st.session_state[f"aln_{browse_strain}_{locus}"] = \
+                                    st.session_state[f"alntext_{browse_strain}_{locus}"] = \
                                         Path(aln_path).read_text()
                                 else:
                                     st.error(f"BLAST failed: {err[:200]}")
 
-                aln_text = st.session_state.get(f"aln_{browse_strain}_{locus}", "")
+                aln_text = st.session_state.get(f"alntext_{browse_strain}_{locus}", "")
                 if aln_text or blast_aln_txt.exists():
                     text = aln_text or blast_aln_txt.read_text()
                     with st.expander("📄 Pairwise alignment (query vs assembly)",

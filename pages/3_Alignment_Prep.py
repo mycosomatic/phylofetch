@@ -197,7 +197,7 @@ with tab_align:
                     }
                 )
             st.dataframe(
-                pd.DataFrame(rows), use_container_width=True, hide_index=True
+                pd.DataFrame(rows), width="stretch", hide_index=True
             )
 
     if "aligned_fastas" in st.session_state:
@@ -325,7 +325,7 @@ with tab_trim:
                     }
                 )
             st.dataframe(
-                pd.DataFrame(rows), use_container_width=True, hide_index=True
+                pd.DataFrame(rows), width="stretch", hide_index=True
             )
 
     # MACSE optional section
@@ -465,7 +465,7 @@ with tab_concat:
                     "Alignment length": aln_len,
                 }
             )
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
         total_sites = sum(r["Alignment length"] for r in rows)
         st.metric("Total sites (before concat)", total_sites)
 
@@ -520,7 +520,7 @@ with tab_concat:
                         for k, v in stats["per_locus_sites"].items()
                     ]
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -574,7 +574,7 @@ with tab_logs:
                 ["started_at", "module", "action", "returncode", "command"]
             ].copy()
             df_display["returncode"] = df_display["returncode"].astype(str)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            st.dataframe(df_display, width="stretch", hide_index=True)
 
             st.markdown("---")
             run_ids = df["run_id"].tolist()

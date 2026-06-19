@@ -239,7 +239,7 @@ with tab_add:
 
             edited_view = st.data_editor(
                 df_view[cols],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "Add?":         st.column_config.CheckboxColumn(),
@@ -426,9 +426,15 @@ with tab_list:
                     "BUSCO %":     f"{cp:.1f}" if isinstance(cp, (int, float)) else "—",
                 }
             )
+        df_summary = pd.DataFrame(rows)
+        # Numeric columns fall back to "—" when a stat is missing, mixing int/float
+        # and str in one column — pyArrow can't serialise that, so stringify them.
+        for col in ("Total (Mb)", "Contigs", "N50 (bp)", "GC (%)"):
+            if col in df_summary.columns:
+                df_summary[col] = df_summary[col].astype(str)
         st.dataframe(
-            pd.DataFrame(rows),
-            use_container_width=True,
+            df_summary,
+            width="stretch",
             hide_index=True,
         )
 
@@ -538,18 +544,18 @@ with tab_stats:
                 st.markdown("**QUAST report**")
                 st.caption(f"Source: `{s.get('quast_report', '—')}`")
                 quast_rows = [
-                    {"Metric": k, "Value": quast[k]}
+                    {"Metric": k, "Value": str(quast[k])}
                     for k in QUAST_DISPLAY_KEYS if k in quast
                 ]
                 if quast_rows:
                     st.dataframe(pd.DataFrame(quast_rows),
-                                 use_container_width=True, hide_index=True)
+                                 width="stretch", hide_index=True)
                 with st.expander("📄 Full QUAST metrics"):
                     st.dataframe(
                         pd.DataFrame(
-                            [{"Metric": k, "Value": v} for k, v in quast.items()]
+                            [{"Metric": k, "Value": str(v)} for k, v in quast.items()]
                         ),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                     )
 
             contigs = s.get("contigs", [])
@@ -567,7 +573,7 @@ with tab_stats:
                         color_discrete_sequence=["steelblue"],
                     )
                     fig.update_layout(showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                 with col_b:
                     fig2 = px.histogram(
@@ -577,7 +583,7 @@ with tab_stats:
                         color_discrete_sequence=["seagreen"],
                     )
                     fig2.update_layout(showlegend=False)
-                    st.plotly_chart(fig2, use_container_width=True)
+                    st.plotly_chart(fig2, width="stretch")
 
                 # If header coverage is available, show GC vs coverage scatter
                 if df_c["header_coverage"].notna().any():
@@ -595,7 +601,7 @@ with tab_stats:
                         color_discrete_sequence=["darkorange"],
                         size_max=30,
                     )
-                    st.plotly_chart(fig3, use_container_width=True)
+                    st.plotly_chart(fig3, width="stretch")
 
                 with st.expander("📄 Per-contig table"):
-                    st.dataframe(df_c, use_container_width=True, hide_index=True)
+                    st.dataframe(df_c, width="stretch", hide_index=True)

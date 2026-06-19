@@ -151,8 +151,10 @@ with tab_input:
                     key="local_assembly_sel",
                 )
                 if local_choices:
-                    # Add to session state so tab 2 can see them
-                    st.session_state["local_assembly_sel"] = {
+                    # Stash selected records under a SEPARATE key — writing the
+                    # multiselect's own widget key ("local_assembly_sel") raises
+                    # StreamlitAPIException, as it is bound to the live widget.
+                    st.session_state["local_assembly_records"] = {
                         sid: registry[sid] for sid in local_choices
                     }
                     st.caption(
@@ -167,7 +169,7 @@ with tab_input:
         queue_df = pd.DataFrame(st.session_state.ncbi_genome_queue)
         edited_queue = st.data_editor(
             queue_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "accession": st.column_config.TextColumn("Accession", disabled=True),
@@ -191,7 +193,7 @@ with tab_input:
 with tab_run:
     st.subheader("Download genomes & run BUSCO / Compleasm")
 
-    if not st.session_state.ncbi_genome_queue and not st.session_state.get("local_assembly_sel"):
+    if not st.session_state.ncbi_genome_queue and not st.session_state.get("local_assembly_records"):
         st.info("Add genomes in the **Genome Input** tab first.")
     else:
         col_cfg1, col_cfg2 = st.columns(2)
@@ -249,7 +251,7 @@ with tab_run:
         ]
         pending_local = {
             sid: info
-            for sid, info in st.session_state.get("local_assembly_sel", {}).items()
+            for sid, info in st.session_state.get("local_assembly_records", {}).items()
             if sid not in st.session_state.busco_results
         }
 
@@ -436,7 +438,7 @@ with tab_import:
     if "busco_scan_rows" in st.session_state:
         edited = st.data_editor(
             pd.DataFrame(st.session_state["busco_scan_rows"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Import?": st.column_config.CheckboxColumn(),
@@ -493,7 +495,7 @@ with tab_import:
                 "Total": res.total,
                 "Complete %": f"{res.completeness_pct:.1f}",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
         to_remove = st.selectbox(
             "Remove a result", [""] + list(st.session_state.busco_results.keys()),
@@ -582,9 +584,9 @@ with tab_matrix:
                         st.caption(f"Showing first 100 of {len(selected_buscos)} BUSCOs.")
                     try:
                         styled = sub_matrix[show_cols].style.map(_color_cell)
-                        st.dataframe(styled, use_container_width=True)
+                        st.dataframe(styled, width="stretch")
                     except Exception:
-                        st.dataframe(sub_matrix[show_cols], use_container_width=True)
+                        st.dataframe(sub_matrix[show_cols], width="stretch")
 
         st.session_state["selected_buscos"]    = selected_buscos
         st.session_state["busco_keep_samples"] = keep_samples

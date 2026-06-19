@@ -67,3 +67,65 @@ Format for each entry:
   canonical sequence is the literature standard. Made in commit `4a03968`.
 - **Alternatives considered:** n/a — the stored sequence was simply incorrect.
 - **Status:** active. Identifier `PRM-001` is also used in `CLAUDE.md` and the test suite.
+
+### D-005 (2026-06-18) — Inference boundary: what lives "under one roof" vs. ported out
+- **Decision:** phylofetch owns the *data-assembly layer* and *thin runners* for inference
+  that does not require trust-establishing diagnostics: locus extraction, NCBI/assembly
+  acquisition, BUSCO/Compleasm, alignment/trim/concat/partitioning, IQ-TREE2 (ML), and —
+  to be added — thin **ASTRAL** (coalescent species tree) and **ANI** (fastANI/pyANI)
+  runners. Bayesian inference & divergence dating (**BEAST2 / MrBayes**), rigorous species
+  delimitation (**BPP / ASAP / GMYC / bPTP**), and publication-grade tree figures
+  (**iTOL / FigTree / ggtree**) are **ported out**: phylofetch generates their inputs but
+  does not run or diagnose them. In-app tree rendering stays quick-look only.
+- **Why:** Tools whose output cannot be trusted without diagnostics (MCMC convergence/ESS,
+  delimitation model adequacy) create *false confidence* when thinly wrapped in Streamlit,
+  and reproducing those diagnostics in-app is a maintenance tarpit. The genuine, hard value
+  is assembling the dataset (extraction + acquisition + matrix building); inference of that
+  kind is a commodity best left to the established, audited tools. Coalescent + ANI are
+  cheap, deterministic-enough additions that directly serve the two project goals (ILS-aware
+  isolate relationships; fast same-species check) and reuse data already on disk.
+- **Alternatives considered:** (a) Maximal in-app inference incl. Bayesian/dating/delimitation
+  — rejected (false-confidence + tarpit). (b) Thin ML runner only (no coalescent/ANI) —
+  rejected as under-powered for the recent-divergence regime the project targets.
+- **Status:** active. Chosen by the user in the 2026-06-18 review session.
+
+### D-006 (2026-06-18) — Next-work priority: type-material-aware reference acquisition first
+- **Decision:** Of the threads surfaced in the 2026-06-18 strategy review, build
+  **type-material support (RM-001)** first, NCBI-first. The remaining roadmap items
+  (RM-002 CDS QC, RM-003 delimitation workflow, RM-004 coalescent/ANI, RM-005 headless)
+  follow; ordering may be revisited.
+- **Why:** "Prioritize comparing with type/reference material" is an explicit project goal
+  and is currently *unsupported* in code — NCBI fetching ignores the
+  `sequence_from_type[Filter]`, discards GenBank voucher/strain/type metadata, and surfaces
+  no type status. It is also the highest-value-per-effort gap: small Entrez/metadata changes
+  unlock a stated objective.
+- **Alternatives considered:** (a) CDS-extraction QC first (RM-002) — recommended by the
+  assistant as the top correctness risk, but the user prioritized the type-material goal;
+  RM-002 remains the next correctness item. (b) Delimitation or reproducibility first —
+  deferred.
+- **Status:** active. First-pass scope confirmed in D-007.
+
+### D-007 (2026-06-18) — RM-001 first-pass scope: references as comparison tips + queries, NCBI-only
+- **Decision:** The type-material first pass will (1) make fetched references **first-class
+  comparison tips** merged into the per-locus combined FASTAs — *new* plumbing, since today
+  the combine step only walks per-strain assembly-derived outputs and never merges
+  references — **and** keep them usable as BLAST extraction queries; (2) be **NCBI-only**
+  (nucleotide type filter + GenBank voucher/strain/`/type_material` metadata + assembly
+  type/representative flags); UNITE and RefSeq Targeted Loci are deferred. Behaviour is
+  **prefer-and-flag**: type-grade sequences sorted first, **falling back to best non-type
+  hits by % identity then coverage** when type material is sparse/absent (common for
+  closely-related species). Ex-type cultures are treated as **equal in grade** to
+  holotype/syntype/isotype/neotype/epitype (the *kind* is recorded and displayed, but does
+  not change ranking). "Validity" of an ex-type is a **human judgement**: we surface
+  `/type_material` kind + strain + culture-collection voucher for the user to cull; we do not
+  auto-trust the tag. Type tips are **force-included even when partial** (labelled partial),
+  consistent with "types are useful in any analysis."
+- **Why:** Comparison against type material only works if type sequences are *tips in the
+  tree*; the filter is the easy part, the tip plumbing is the real value. NCBI-only covers
+  most of the goal with the smallest surface; UNITE/RefSeq use a different
+  identifier/curation-based flow and can be added later without rework.
+- **Alternatives considered:** (a) References as extraction queries only — rejected, doesn't
+  place isolates against types. (b) Type-only hard filter — rejected, discards unflagged
+  type-derived records and leaves thin coverage in poorly-sampled genera. (c) Include
+  UNITE/RefSeq-TL now — deferred to keep the first pass small.
+- **Status:** active. Implementation plan to be approved before coding.

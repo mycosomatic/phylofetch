@@ -166,7 +166,7 @@ with tab_iqtree:
             df = pd.DataFrame(rows)[
                 ["started_at", "action", "returncode", "command"]
             ]
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
         else:
             st.info("No IQ-TREE2 runs in history.")
     else:
