@@ -5,6 +5,12 @@
 
 ## 2026-06-19
 
+- **Custom-locus primers in PCR Primer mode (`pages/2_Loci_Extraction.py`).** Added an
+  "➕ Custom locus" section so in-silico PCR can target a locus not in the catalogue
+  (name + fwd/rev + size window; IUPAC degenerate codes allowed), optionally saved to the
+  user library. Custom loci merge into `primer_assignments`, so the binding-site preview,
+  run loop and combine step pick them up like any catalogue locus; the strain/loci guard
+  and the "Ready" summary account for them.
 - **Bug fix — PCR Primer mode hid reference-less loci (`pages/2_Loci_Extraction.py`).** The
   Loci selector gated coding loci on `count_refs(l) > 0` for *all* strategies, so loci with
   no NCBI references (RPB2, TUB2, ACT, CAL, GAPDH, HIS3) were unselectable — even in PCR

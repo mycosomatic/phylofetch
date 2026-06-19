@@ -124,6 +124,7 @@ Three selectable strategies drive loci extraction:
 ### Primer library (`primer_utils.py` + `data/primers.json`)
 - **Citable, packaged catalogue**: `src/phylofetch/data/primers.json` ships via `[tool.setuptools.package-data]`. Every pair carries `source`, `citation`, `reference_url` (primary literature; rDNA cross-checked vs UNITE). 14 pairs across ITS/SSU/LSU/TEF1/RPB2/TUB2/ACT/CAL/HIS3/GAPDH.
 - **User library**: custom pairs persist in `~/.phylofetch/primers.json`; merged on top of built-in via `get_primer_catalogue()` (user wins on name clash). `save_user_primer` / `load_user_primers` / `delete_user_primer`.
+- **In-app entry**: PCR Primer mode offers all loci (no reference gate, unlike BLAST/Exonerate), a per-locus "Custom…" pair entry, and an "➕ Custom locus" section for a locus *not* in the catalogue (custom loci merge into `primer_assignments`, so preview/run/combine treat them like any other).
 - **Edit-distance matching**: `max_mismatches` = substitutions + unaligned primer bases (`_effective_mismatch`), so partial/truncated primer alignments can't slip through.
 - **Disambiguation**: `find_primer_amplicons()` returns all candidate sites sorted by edit distance; the UI "Preview & choose binding sites" lets the user override the auto-pick (off-target handling).
 - **Logged + provenanced**: primer search routes through RunManager; `LOCUS_extraction.log` records primer, citation, command, and chosen site.

@@ -576,6 +576,70 @@ with tab_run:
                             st.caption(f"📖 {pp.source}{ref}")
                         primer_assignments[locus] = pp
 
+        # ── Custom locus (primer pair for a locus not in the catalogue) ───────
+        if "primer_custom_loci" not in st.session_state:
+            st.session_state.primer_custom_loci = {}   # name -> primer record dict
+        with st.expander("➕ Custom locus — primer pair for a locus not in the catalogue"):
+            st.caption(
+                "Define in-silico PCR for any locus by name, even one phylofetch doesn't "
+                "ship (e.g. MCM7, BenA). It's extracted just like a catalogue primer and "
+                "added to this run; tick the box to also keep it in your saved library."
+            )
+            cl1, cl2, cl3 = st.columns([2, 3, 2])
+            with cl1:
+                cl_name = st.text_input("Locus name", key="cl_name",
+                                        placeholder="e.g. MCM7, BenA, LROR2")
+            with cl2:
+                cl_fwd = st.text_input("Fwd primer (5'→3')", key="cl_fwd",
+                                       placeholder="ACIMGIGTITC…  (IUPAC degenerate OK)")
+                cl_rev = st.text_input("Rev primer (5'→3')", key="cl_rev",
+                                       placeholder="GAYTTDGCIAC…")
+            with cl3:
+                cl_min = st.number_input("Min bp", value=100, step=50, key="cl_min")
+                cl_max = st.number_input("Max bp", value=5000, step=100, key="cl_max")
+            cl_save = st.checkbox("Also save to my library (~/.phylofetch/primers.json)",
+                                  key="cl_save")
+            if st.button("➕ Add custom locus", key="cl_add"):
+                name = (cl_name or "").strip().upper().replace(" ", "_")
+                if not name:
+                    st.warning("Enter a locus name.")
+                elif not (cl_fwd.strip() and cl_rev.strip()):
+                    st.warning("Enter both forward and reverse primers.")
+                else:
+                    st.session_state.primer_custom_loci[name] = {
+                        "locus": name,
+                        "fwd": cl_fwd.strip().upper(), "rev": cl_rev.strip().upper(),
+                        "min_amplicon": int(cl_min), "max_amplicon": int(cl_max),
+                        "source": "user-added",
+                    }
+                    if cl_save:
+                        save_user_primer(PrimerPair(
+                            name=f"{name}_custom", locus=name,
+                            fwd=cl_fwd.strip().upper(), rev=cl_rev.strip().upper(),
+                            min_amplicon=int(cl_min), max_amplicon=int(cl_max),
+                            source="user-added", origin="user"))
+                        st.success(f"Added '{name}' and saved it to ~/.phylofetch/primers.json")
+                    else:
+                        st.success(f"Added custom locus '{name}' for this run.")
+                    st.rerun()
+            for cname, rec in list(st.session_state.primer_custom_loci.items()):
+                rcx1, rcx2 = st.columns([5, 1])
+                rcx1.caption(f"**{cname}** · F:`{rec['fwd']}` R:`{rec['rev']}` · "
+                             f"{rec['min_amplicon']}–{rec['max_amplicon']} bp")
+                if rcx2.button("🗑️ Remove", key=f"cl_del_{cname}"):
+                    del st.session_state.primer_custom_loci[cname]
+                    st.rerun()
+
+        # Merge custom loci into the assignments that actually run (so the preview,
+        # run loop and combine step all pick them up like any catalogue locus).
+        for cname, rec in st.session_state.primer_custom_loci.items():
+            primer_assignments[cname] = PrimerPair(
+                name=f"{cname}_custom", locus=cname,
+                fwd=rec["fwd"], rev=rec["rev"],
+                min_amplicon=int(rec["min_amplicon"]), max_amplicon=int(rec["max_amplicon"]),
+                source=rec.get("source", "user-added"), origin="user",
+            )
+
         # Manage saved (user) primers
         user_lib = load_user_primers()
         if user_lib:
@@ -696,8 +760,9 @@ with tab_run:
                     st.rerun()
         goi_genes = {n: p for n, p in st.session_state.goi_genes.items() if os.path.exists(p)}
 
-    if not sel_strains or (not sel_loci and not goi_genes):
-        st.info("Select strains and loci above (or add a gene of interest).")
+    have_custom_primers = use_primers and bool(st.session_state.get("primer_custom_loci"))
+    if not sel_strains or (not sel_loci and not goi_genes and not have_custom_primers):
+        st.info("Select strains and loci above (or add a gene of interest / custom primer locus).")
         st.stop()
 
     rdna_run   = [l for l in sel_loci if l in ("ITS", "LSU", "SSU", "ITS1", "ITS2", "ITS_full")]
@@ -706,7 +771,7 @@ with tab_run:
     # Primer mode: show assignment coverage warning before run
     if use_primers:
         unassigned = [l for l in sel_loci if l not in primer_assignments]
-        assigned   = [l for l in sel_loci if l in primer_assignments]
+        assigned   = list(primer_assignments)   # incl. custom loci not in sel_loci
         if unassigned:
             st.warning(f"No primer pair assigned for: {', '.join(unassigned)}. Those loci will be skipped.")
         st.markdown(
