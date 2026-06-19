@@ -201,6 +201,15 @@ def extract_from_hsps(hsps: list[dict], assembly_fasta: str,
                       ref_accession: str = "") -> Optional[dict]:
     """
     Extract CDS, genomic amplicon, and intron sequences from a set of exon HSPs.
+
+    NOTE (D-008): for *protein-coding CDS* production this HSP-as-exon stitching is
+    the **documented fallback** — it does not validate the reading frame, so a
+    1-2 bp HSP-boundary error can frameshift the CDS silently (PLANNING.md → RM-002).
+    The preferred, frame-safe path is ``exonerate_utils.extract_locus_exonerate``
+    (spliced alignment with an explicit intron/splice model); the UI falls back here
+    only when Exonerate is unavailable, with a visible warning. This function remains
+    the *primary* path for the relaxed PCR-amplicon strategy, where partial /
+    intron-containing genomic amplicons are expected and no frame guarantee is implied.
     Returns a result dict, or None if the contig cannot be found.
     """
     if not hsps:
@@ -606,9 +615,13 @@ def extract_locus(
 
 def merge_per_strain_outputs(per_strain_dir: str, combined_dir: str,
                              locus_name: str) -> dict[str, str]:
-    """Concatenate per-strain FASTA files into combined multi-FASTAs."""
+    """Concatenate per-strain FASTA files into combined multi-FASTAs.
+
+    Includes the translated ``protein`` product when present (Exonerate path);
+    absent for BLAST/primer output, in which case that key is simply skipped.
+    """
     os.makedirs(combined_dir, exist_ok=True)
-    outputs: dict[str, list] = {"CDS": [], "genomic": [], "introns": []}
+    outputs: dict[str, list] = {"CDS": [], "protein": [], "genomic": [], "introns": []}
 
     for strain_dir in sorted(Path(per_strain_dir).iterdir()):
         if not strain_dir.is_dir():
@@ -618,6 +631,7 @@ def merge_per_strain_outputs(per_strain_dir: str, combined_dir: str,
             continue
         for key, suffix in [
             ("CDS",     f"{locus_name}_CDS.fasta"),
+            ("protein", f"{locus_name}_protein.fasta"),
             ("genomic", f"{locus_name}_genomic.fasta"),
             ("introns", f"{locus_name}_introns.fasta"),
         ]:

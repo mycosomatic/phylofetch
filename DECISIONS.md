@@ -129,3 +129,42 @@ Format for each entry:
   type-derived records and leaves thin coverage in poorly-sampled genera. (c) Include
   UNITE/RefSeq-TL now — deferred to keep the first pass small.
 - **Status:** active. Implementation plan to be approved before coding.
+
+### D-008 (2026-06-19) — Exonerate spliced alignment for frame-safe CDS + gene-of-interest extraction
+- **Decision:** Adopt **Exonerate** for protein-coding locus extraction via a new module
+  `src/phylofetch/exonerate_utils.py`. The coding strategy is a **hybrid pipeline**:
+  tblastn/blastn first narrows to the single best contig (reusing
+  `select_best_locus_group`), then Exonerate refines the gene on that contig with an
+  explicit intron/splice model — `protein2genome` for protein references, `coding2genome`
+  for nucleotide CDS references (model auto-selected from `detect_fasta_type`). Coordinates
+  stay in contig space (no offset math). When BLAST narrowing finds nothing, Exonerate runs
+  against the whole assembly. Two query sources are supported: the existing per-locus
+  Reference Library, **and** a free "gene of interest" input (paste/upload an arbitrary
+  ortholog → get just the CDS + exon model). Outputs mirror the BLAST path plus a translated
+  `*_protein.fasta`, and add CDS QC (reading-frame `len % 3`, internal-stop count, GT-AG
+  splice tally, %identity/coverage, `%tcs` cross-check). The `extract_from_hsps` HSP-as-exon
+  path is **demoted to a documented fallback** for coding CDS (used only when `exonerate`
+  is not on PATH, with a visible frame-safety warning) and remains the *primary* path for
+  the relaxed PCR-amplicon strategy. By default imperfect models are written-and-flagged,
+  not dropped (a `strict_qc` toggle rejects internal-stop / frameshift CDS); consistent with
+  D-007 keeping partial/type sequences.
+- **Why:** The HSP-as-exon stitching had no reading-frame check — a 1-2 bp HSP-boundary
+  error silently frameshifts the CDS (PLANNING.md → RM-002 risk register). Exonerate's
+  spliced alignment is the established tool for accurate exon/intron boundaries and a
+  translatable CDS, directly addressing RM-002, and it unlocks the user's "locate any gene
+  of interest from an ortholog" goal. It is deterministic gene-finding in the data-assembly
+  layer, so it fits the D-005 inference boundary (no trust-requiring diagnostics). Demoting
+  rather than deleting the HSP path honours the working agreement's caution about removing
+  code and keeps a graceful fallback (cf. the MACSE pattern). Validated against the
+  installed Exonerate 2.4.0 on plus/minus strands and `coding2genome`.
+- **Alternatives considered:** (a) New parallel 4th strategy leaving the BLAST CDS path
+  intact — rejected by the user in favour of actually upgrading the coding path. (b) Replace
+  the coding path with whole-genome Exonerate (no BLAST narrowing) — rejected as too slow on
+  30-40 Mb assemblies × many loci × many strains. (c) **miniprot** (modern protein-to-genome
+  aligner) instead of Exonerate — noted as a possible future alternative, but the user chose
+  Exonerate after discussion and it is the long-established standard for this task. (d) Hard
+  reading-frame gate that drops imperfect CDS — rejected as default (would silently discard
+  partial/type sequences, contra D-007); offered as opt-in `strict_qc`.
+- **Status:** active. Implemented 2026-06-19; 23 network-free + binary-guarded tests
+  (`tests/test_exonerate_utils.py`), full suite 139 passing. `extract_from_hsps` retained
+  as documented fallback per the working agreement.

@@ -9,6 +9,7 @@ dependencies:
   # Bioinformatics tools
   - bioconda::itsx=1.1.3
   - bioconda::blast=2.14.0
+  - bioconda::exonerate=2.4.0    # spliced protein/CDS→genome alignment (frame-safe CDS)
   - bioconda::mafft=7.520
   - bioconda::trimal=1.4.1
   - bioconda::iqtree=2.2.6

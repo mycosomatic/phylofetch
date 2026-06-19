@@ -14,6 +14,7 @@ tool versions, environment snapshot, command history).
 import os
 import shutil
 import sys
+import textwrap
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +29,7 @@ from phylofetch.blast_loci_utils import (
     run_blast_alignment,
 )
 from phylofetch.config import load_config, save_config
+from phylofetch.exonerate_utils import extract_locus_exonerate
 from phylofetch.itsx_utils import ITSX_SUFFIXES, run_itsx
 from phylofetch.ncbi_utils import (
     LOCUS_CATALOGUE,
@@ -57,8 +59,8 @@ from phylofetch.project_manager import DEFAULT_PROJECT_DIR, RunManager
 st.set_page_config(page_title="Loci Extraction", page_icon="🧬", layout="wide")
 st.title("🧬 Loci Extraction")
 st.caption(
-    "ITSx for rDNA · BLAST HSP-as-exon for coding loci · "
-    "Outputs: CDS, genomic, introns, GFF3, codon partitions, extraction logs"
+    "ITSx for rDNA · Exonerate spliced alignment (frame-safe) for coding loci · "
+    "Outputs: CDS, protein, genomic, introns, GFF3, codon partitions, extraction logs"
 )
 
 # ── Session / config ──────────────────────────────────────────────────────────
@@ -345,16 +347,30 @@ with tab_run:
     # ── Extraction strategy (choose first — it drives the whole workflow) ──────
     ref_strategy = st.radio(
         "Extraction strategy",
-        ["BLAST – PCR amplicon refs (relaxed)", "BLAST – CDS / protein (strict)", "PCR Primers"],
+        ["BLAST – PCR amplicon refs (relaxed)",
+         "Coding loci – Exonerate (frame-safe)",
+         "PCR Primers"],
         horizontal=True,
         help=(
-            "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate. "
-            "BLAST (strict): curated CDS / protein refs — enforces CDS length. "
+            "BLAST (relaxed): NCBI amplicon refs — skips the CDS completeness gate; "
+            "genomic amplicon is the product. "
+            "Exonerate: tblastn/blastn narrows to the best contig, then Exonerate spliced "
+            "alignment (protein2genome / coding2genome) gives a frame-safe CDS with accurate "
+            "exon/intron boundaries — preferred for protein-coding loci (D-008). "
             "PCR Primers: locate amplicons directly by primer binding sites (no NCBI refs needed)."
         ),
     )
-    require_cds = ref_strategy.startswith("BLAST – CDS")
+    use_exonerate = ref_strategy.startswith("Coding loci")
+    require_cds = use_exonerate            # frame-safe strategy ⇒ enforce CDS gate on fallback
     use_primers = ref_strategy == "PCR Primers"
+    if use_exonerate:
+        st.info(
+            "🧬 **Exonerate mode** — for each coding locus, BLAST first narrows to the best "
+            "contig, then Exonerate aligns the reference *protein* (`protein2genome`) or "
+            "*CDS* (`coding2genome`) across intron boundaries to recover a translatable, "
+            "frame-checked CDS. rDNA loci (ITS/LSU/SSU) still go through ITSx. You can also "
+            "extract an arbitrary **gene of interest** below."
+        )
     if use_primers:
         st.info(
             "🔬 **PCR Primer mode** — amplicons are located directly by primer binding sites in "
@@ -394,36 +410,82 @@ with tab_run:
     with st.expander("⚙️ Settings"):
         ca, cb, cc = st.columns(3)
         with ca:
-            threads     = st.slider("Threads", 1, 32, 4)
-            blastn_bin  = st.text_input("blastn", value=tp.get("blastn", "blastn"))
-            tblastn_bin = st.text_input("tblastn", value=tp.get("tblastn", "tblastn"))
-            itsx_bin    = st.text_input("ITSx", value=tp.get("itsx", "ITSx"))
+            threads      = st.slider("Threads", 1, 32, 4)
+            blastn_bin   = st.text_input("blastn", value=tp.get("blastn", "blastn"))
+            tblastn_bin  = st.text_input("tblastn", value=tp.get("tblastn", "tblastn"))
+            itsx_bin     = st.text_input("ITSx", value=tp.get("itsx", "ITSx"))
+            exonerate_bin = st.text_input("exonerate", value=tp.get("exonerate", "exonerate"))
             itsx_kingdom = st.selectbox("ITSx kingdom", ["fungi", "all", "metazoa", "viridiplantae"],
                                         help="Restrict ITSx to specific HMM profiles")
         with cb:
             blastn_task = st.selectbox(
                 "blastn task",
                 ["dc-megablast", "megablast", "blastn"],
-                disabled=use_primers,
+                disabled=use_primers or use_exonerate,
                 help="dc-megablast: balanced default. blastn: most sensitive (use if exons are missed).",
             )
-            min_pident  = st.number_input("Min % identity", value=70, min_value=30, max_value=100,
-                                          disabled=use_primers)
+            min_pident  = st.number_input(
+                "Min % identity", value=70, min_value=30, max_value=100,
+                disabled=use_primers,
+                help="BLAST identity floor (also gates the Exonerate contig-narrowing step).",
+            )
             min_cds_pct = st.number_input(
                 "Min CDS % of reference", value=50, min_value=10, max_value=100,
-                disabled=not require_cds,
-                help="Only enforced in BLAST – CDS / protein (strict) strategy.",
+                disabled=use_exonerate or use_primers,
+                help="CDS-length gate for the BLAST HSP fallback (used only if Exonerate is unavailable).",
             )
             evalue      = st.text_input("E-value", "1e-20", disabled=use_primers)
         with cc:
             st.markdown("**Tool check:**")
-            for label, exe in [("blastn", blastn_bin), ("tblastn", tblastn_bin), ("ITSx", itsx_bin)]:
+            exonerate_ok = shutil.which(exonerate_bin) is not None
+            for label, exe in [("blastn", blastn_bin), ("tblastn", tblastn_bin),
+                               ("ITSx", itsx_bin), ("exonerate", exonerate_bin)]:
                 ok = shutil.which(exe) is not None
                 st.write(f"{'✅' if ok else '❌'} {label}")
             if not shutil.which(blastn_bin):
                 st.caption("`conda install -c bioconda blast`")
             if not shutil.which(itsx_bin):
                 st.caption("`conda install -c bioconda itsx`")
+            if not exonerate_ok:
+                st.caption("`conda install -c bioconda exonerate`")
+
+        # Exonerate-specific parameters (used by the frame-safe coding strategy).
+        if use_exonerate:
+            st.markdown("**Exonerate (spliced alignment) options:**")
+            ex1, ex2, ex3 = st.columns(3)
+            with ex1:
+                ex_maxintron = st.number_input(
+                    "Max intron (bp)", value=2000, min_value=50, max_value=200000, step=100,
+                    help="Fungal introns are short (50–300 bp). Exonerate's own default (200 kb) "
+                         "invites spurious giant introns; 2000 is a safe fungal ceiling.",
+                )
+                ex_minintron = st.number_input("Min intron (bp)", value=20, min_value=4, max_value=200)
+            with ex2:
+                ex_bestn = st.number_input(
+                    "Report top N models", value=1, min_value=1, max_value=20,
+                    help=">1 surfaces paralogs / tandem duplicates for review.",
+                )
+                ex_geneticcode = st.number_input(
+                    "Genetic code (NCBI)", value=1, min_value=1, max_value=33,
+                    help="1 = standard (fungal nuclear). Change only for organellar/alternative codes.",
+                )
+            with ex3:
+                ex_refine = st.selectbox(
+                    "Boundary refinement", ["none", "region", "full"],
+                    help="'full' refines exon boundaries (slower, more accurate).",
+                )
+                ex_strict_qc = st.checkbox(
+                    "Strict QC (reject frameshift / internal stop)", value=False,
+                    help="When off, imperfect models are still written but flagged "
+                         "(consistent with keeping partial / type sequences).",
+                )
+                ex_narrow = st.checkbox(
+                    "BLAST-narrow to best contig (faster)", value=True,
+                    help="Off ⇒ run Exonerate against the whole assembly (thorough, slower).",
+                )
+        else:
+            ex_maxintron, ex_minintron, ex_bestn = 2000, 20, 1
+            ex_geneticcode, ex_refine, ex_strict_qc, ex_narrow = 1, "none", False, True
 
     # ── Primer pair assignment (shown only in PCR Primers mode) ───────────────
     if use_primers:
@@ -574,8 +636,62 @@ with tab_run:
                         )
                         st.session_state[f"primer_pick_{key}"] = opts.index(choice)
 
-    if not sel_strains or not sel_loci:
-        st.info("Select strains and loci above.")
+    # ── Gene of interest (ad-hoc ortholog → CDS) — Exonerate strategy only ─────
+    goi_genes: dict[str, str] = {}
+    if use_exonerate:
+        goi_dir = os.path.join(output_base, "loci", "_goi_refs")
+        if "goi_genes" not in st.session_state:
+            st.session_state.goi_genes = {}
+        with st.expander("🔎 Gene of interest — extract any ortholog's CDS", expanded=False):
+            st.caption(
+                "Paste or upload a reference **protein** or **CDS** for any gene of interest "
+                "(an ortholog from a related species). Exonerate locates it in each selected "
+                "assembly and returns just the CDS + exon model — no NCBI reference library needed."
+            )
+            gc1, gc2 = st.columns([1, 2])
+            with gc1:
+                goi_name = st.text_input("Gene name (used for output / tip labels)",
+                                         key="goi_name", placeholder="e.g. CAL, mcm7, betaTUB")
+                goi_file = st.file_uploader("…or upload FASTA",
+                                            type=["fa", "fasta", "faa", "fna", "txt"],
+                                            key="goi_file")
+            with gc2:
+                goi_text = st.text_area("Reference FASTA (protein or nucleotide CDS)",
+                                        key="goi_text", height=120,
+                                        placeholder=">ref_ortholog\nMSEQ… (protein) or ATG… (CDS)")
+            if st.button("➕ Add gene of interest", key="goi_add"):
+                name = (goi_name or "").strip().replace(" ", "_")
+                content = ""
+                if goi_file is not None:
+                    content = goi_file.getvalue().decode("utf-8", "replace")
+                elif goi_text.strip():
+                    content = goi_text
+                if not name:
+                    st.warning("Enter a gene name.")
+                elif not content.strip():
+                    st.warning("Paste or upload a reference FASTA.")
+                else:
+                    if not content.lstrip().startswith(">"):
+                        content = f">{name}_ref\n{content.strip()}\n"
+                    os.makedirs(goi_dir, exist_ok=True)
+                    ref_path = os.path.join(goi_dir, f"{name}.fasta")
+                    Path(ref_path).write_text(content)
+                    st.session_state.goi_genes[name] = ref_path
+                    st.success(f"Added gene of interest '{name}'.")
+                    st.rerun()
+            for gname, gpath in list(st.session_state.goi_genes.items()):
+                rc1, rc2 = st.columns([5, 1])
+                exists = os.path.exists(gpath)
+                rtype = detect_fasta_type(gpath) if exists else "?"
+                rc1.caption(f"**{gname}** · {rtype} ref · `{gpath}`"
+                            + ("" if exists else " · ⚠️ file missing"))
+                if rc2.button("🗑️ Remove", key=f"goi_del_{gname}"):
+                    del st.session_state.goi_genes[gname]
+                    st.rerun()
+        goi_genes = {n: p for n, p in st.session_state.goi_genes.items() if os.path.exists(p)}
+
+    if not sel_strains or (not sel_loci and not goi_genes):
+        st.info("Select strains and loci above (or add a gene of interest).")
         st.stop()
 
     rdna_run   = [l for l in sel_loci if l in ("ITS", "LSU", "SSU", "ITS1", "ITS2", "ITS_full")]
@@ -593,10 +709,20 @@ with tab_run:
             f"Max mismatches: {max_mm}"
         )
     else:
+        coding_engine = "Exonerate" if use_exonerate else "BLAST"
+        if use_exonerate and not exonerate_ok:
+            st.warning(
+                "⚠️ **Exonerate not found on PATH** — coding loci will fall back to the BLAST "
+                "HSP-as-exon path, which does **not** validate the reading frame (a 1–2 bp "
+                "boundary error can frameshift the CDS silently). Install for frame-safe CDS: "
+                "`conda install -c bioconda exonerate`."
+            )
+            coding_engine = "BLAST HSP fallback ⚠️"
         st.markdown(
             f"**Ready:** {len(sel_strains)} strain(s) · "
             f"rDNA (ITSx): {', '.join(rdna_run) or '—'} · "
-            f"CDS (BLAST): {', '.join(coding_run) or '—'}"
+            f"CDS ({coding_engine}): {', '.join(coding_run) or '—'}"
+            + (f" · Gene(s) of interest: {', '.join(goi_genes)}" if goi_genes else "")
         )
 
     if st.button("🚀 Run extraction", type="primary"):
@@ -616,10 +742,88 @@ with tab_run:
 
         manager = RunManager(project_dir)
 
-        active_loci    = list(primer_assignments) if use_primers else sel_loci
-        total_jobs     = len(sel_strains) * max(len(active_loci), 1)
+        active_loci = (list(primer_assignments) if use_primers
+                       else list(sel_loci) + list(goi_genes))
+        total_jobs  = len(sel_strains) * max(len(active_loci), 1)
         prog  = st.progress(0)
         job_n = 0
+
+        # Shared coding-locus extraction: Exonerate (frame-safe) when available,
+        # else the BLAST HSP-as-exon fallback. Used for both catalogue loci and
+        # ad-hoc genes of interest, so they share one logged code path.
+        def _extract_coding(strain_id, assembly, locus, ref_fa, locus_out):
+            os.makedirs(locus_out, exist_ok=True)
+            if use_exonerate and exonerate_ok:
+                _rid, rdir = manager.dry_run(
+                    [exonerate_bin, "--model", "(auto)", "--query", ref_fa, "--target", assembly],
+                    module="loci_extraction", action=f"exonerate_{locus}_{strain_id}",
+                    inputs={"assembly": assembly, "reference": ref_fa},
+                    outputs={"locus_dir": locus_out},
+                    params={"min_pident": min_pident, "maxintron": int(ex_maxintron),
+                            "bestn": int(ex_bestn), "narrow": ex_narrow,
+                            "refine": ex_refine, "geneticcode": int(ex_geneticcode)},
+                )
+                with st.spinner(f"[{strain_id}] Exonerate: {locus}…"):
+                    return extract_locus_exonerate(
+                        assembly_fasta=assembly, reference_fasta=ref_fa,
+                        output_dir=locus_out, strain_id=strain_id, locus_name=locus,
+                        exonerate_bin=exonerate_bin, blastn_bin=blastn_bin, tblastn_bin=tblastn_bin,
+                        narrow=ex_narrow, minintron=int(ex_minintron), maxintron=int(ex_maxintron),
+                        bestn=int(ex_bestn), refine=ex_refine, geneticcode=int(ex_geneticcode),
+                        min_pident=float(min_pident), evalue=evalue_float, threads=threads,
+                        strict_qc=ex_strict_qc, manager=manager, run_dir=str(rdir),
+                    )
+            # BLAST HSP-as-exon fallback (no reading-frame guarantee; see D-008).
+            cmd_parts = [
+                blastn_bin if detect_fasta_type(ref_fa) == "nucleotide" else tblastn_bin,
+                "-query", ref_fa, "-subject", assembly, "-evalue", str(evalue_float),
+            ]
+            rr = manager.dry_run(
+                cmd_parts, module="loci_extraction", action=f"{locus}_{strain_id}",
+                inputs={"assembly": assembly, "reference": ref_fa},
+                outputs={"locus_dir": locus_out},
+                params={"evalue": evalue_float, "min_pident": min_pident,
+                        "min_cds_pct": min_cds_pct, "blastn_task": blastn_task},
+            )
+            with st.spinner(f"[{strain_id}] BLAST: {locus}…"):
+                return extract_locus(
+                    assembly_fasta=assembly, reference_fasta=ref_fa, output_dir=locus_out,
+                    strain_id=strain_id, locus_name=locus,
+                    min_pident=float(min_pident), min_cds_pct_of_ref=float(min_cds_pct),
+                    evalue=evalue_float, blastn_task=blastn_task, threads=threads,
+                    blastn_bin=blastn_bin, tblastn_bin=tblastn_bin, run_dir=str(rr[1]),
+                    require_complete_cds=require_cds,
+                )
+
+        def _report_coding(locus, result, status, goi=False):
+            label = f"🔎 {locus}" if goi else locus
+            if not result:
+                st.write(f"⚠️ {label}: {status}")
+                return
+            n_introns  = result["n_introns"]
+            splices_ok = sum(1 for intr in result["introns"]
+                             if intr["splice_5"] == "GT" and intr["splice_3"] == "AG")
+            splice_note = f" · GT-AG: {splices_ok}/{n_introns}" if n_introns > 0 else ""
+            if result.get("tool") == "exonerate":
+                stops, frame = result.get("n_internal_stops", 0), result.get("len_mod3", 0)
+                qc = ("✅ frame OK" if (stops == 0 and frame == 0)
+                      else f"⚠️ QC review: {stops} internal stop(s), len%3={frame}")
+                model_label = result.get("blast_type", "").replace("exonerate:", "").split(":")[0]
+                paralog = (f" · {result['n_other_models']} paralog cand(s)"
+                           if result.get("n_other_models") else "")
+                st.write(
+                    f"✅ {label} (Exonerate {model_label or 'protein2genome'}): "
+                    f"{result['n_exons']} exon(s), {result['cds_length']} bp CDS, "
+                    f"{n_introns} intron(s){splice_note} · {qc} · "
+                    f"id {result.get('query_pident', 0):.0f}% cov {result.get('query_coverage', 0):.0f}%"
+                    f"{paralog} · ref `{result.get('ref_accession', '?')}`"
+                )
+            else:
+                st.write(
+                    f"✅ {label} ({result['blast_type']}): "
+                    f"{result['n_exons']} exon(s), {result['cds_length']} bp CDS, "
+                    f"{n_introns} intron(s){splice_note} · ref `{result.get('ref_accession', '?')}`"
+                )
 
         for strain_id in sel_strains:
             assembly   = st.session_state.assemblies[strain_id]["assembly_path"]
@@ -704,72 +908,29 @@ with tab_run:
                         st.write(f"⚠️ {locus}: not detected by ITSx")
                     job_n += 1; prog.progress(job_n / total_jobs)
 
-            # ── BLAST for coding loci ──────────────────────────────────────
+            # ── Coding loci: Exonerate (frame-safe) or BLAST HSP fallback ──
             for locus in coding_run:
                 ref_fa = locus_ref_fasta(locus)
                 if not os.path.exists(ref_fa) or os.path.getsize(ref_fa) == 0:
                     st.write(f"⚠️ {locus}: no references in library, skipping")
                     job_n += 1; prog.progress(job_n / total_jobs)
                     continue
-
                 locus_out = os.path.join(strain_out, locus)
+                result, status = _extract_coding(strain_id, assembly, locus, ref_fa, locus_out)
+                _report_coding(locus, result, status)
+                job_n += 1; prog.progress(job_n / total_jobs)
 
-                # Wrap in RunManager for full logging
-                cmd_parts = [
-                    blastn_bin if detect_fasta_type(ref_fa) == "nucleotide" else tblastn_bin,
-                    "-query", ref_fa, "-subject", assembly,
-                    "-evalue", str(evalue_float),
-                ]
-                rr = manager.dry_run(
-                    cmd_parts, module="loci_extraction", action=f"{locus}_{strain_id}",
-                    inputs={"assembly": assembly, "reference": ref_fa},
-                    outputs={"locus_dir": locus_out},
-                    params={"evalue": evalue_float, "min_pident": min_pident,
-                            "min_cds_pct": min_cds_pct, "blastn_task": blastn_task},
-                )
-
-                with st.spinner(f"[{strain_id}] BLAST: {locus}…"):
-                    result, status = extract_locus(
-                        assembly_fasta=assembly,
-                        reference_fasta=ref_fa,
-                        output_dir=locus_out,
-                        strain_id=strain_id,
-                        locus_name=locus,
-                        min_pident=float(min_pident),
-                        min_cds_pct_of_ref=float(min_cds_pct),
-                        evalue=evalue_float,
-                        blastn_task=blastn_task,
-                        threads=threads,
-                        blastn_bin=blastn_bin,
-                        tblastn_bin=tblastn_bin,
-                        run_dir=str(rr[1]),
-                        require_complete_cds=require_cds,
-                    )
-
-                if result:
-                    n_introns    = result["n_introns"]
-                    splices_ok   = sum(
-                        1 for intr in result["introns"]
-                        if intr["splice_5"] == "GT" and intr["splice_3"] == "AG"
-                    )
-                    splice_note = (
-                        f" · GT-AG splice sites: {splices_ok}/{n_introns}"
-                        if n_introns > 0 else ""
-                    )
-                    st.write(
-                        f"✅ {locus} ({result['blast_type']}): "
-                        f"{result['n_exons']} exon(s), {result['cds_length']} bp CDS, "
-                        f"{n_introns} intron(s){splice_note} · "
-                        f"ref: `{result.get('ref_accession', '?')}`"
-                    )
-                else:
-                    st.write(f"⚠️ {locus}: {status}")
-
+            # ── Gene(s) of interest (Exonerate, ad-hoc ortholog → CDS) ─────
+            for gname, gref in goi_genes.items():
+                locus_out = os.path.join(strain_out, gname)
+                result, status = _extract_coding(strain_id, assembly, gname, gref, locus_out)
+                _report_coding(gname, result, status, goi=True)
                 job_n += 1; prog.progress(job_n / total_jobs)
 
         # ── Merge combined files ───────────────────────────────────────────
         st.markdown("**Merging into combined multi-FASTAs…**")
-        merge_loci = list(primer_assignments) if use_primers else sel_loci
+        merge_loci = (list(primer_assignments) if use_primers
+                      else list(sel_loci) + list(goi_genes))
         for locus in merge_loci:
             # Primer-based amplicons
             if use_primers:
@@ -901,6 +1062,32 @@ with tab_results:
                             st.dataframe(pd.DataFrame(meta_rows),
                                          width="stretch", hide_index=True)
 
+                        # Frame / QC badge (Exonerate path records internal_stops)
+                        stops = desc_fields.get("internal_stops")
+                        if stops is not None:
+                            try:
+                                nstop = int(stops)
+                            except ValueError:
+                                nstop = -1
+                            if nstop == 0:
+                                st.success("✅ CDS QC — in-frame, no internal stop codons.")
+                            elif nstop > 0:
+                                st.warning(
+                                    f"⚠️ CDS QC — {nstop} internal stop codon(s); review "
+                                    "(possible frameshift, pseudogene, or wrong genetic code)."
+                                )
+
+                        # Translated protein (Exonerate path)
+                        prot_fp = locus_dir / f"{locus}_protein.fasta"
+                        if prot_fp.exists():
+                            precs = list(SeqIO.parse(str(prot_fp), "fasta"))
+                            if precs:
+                                pseq = str(precs[0].seq)
+                                with st.expander(
+                                    f"🧬 Translated protein — {len(pseq.rstrip('*'))} aa"
+                                ):
+                                    st.code("\n".join(textwrap.wrap(pseq, 60)), language=None)
+
                 # Exon / intron structure from GFF3
                 gff_path = locus_dir / f"{locus}.gff3"
                 if gff_path.exists():
@@ -996,7 +1183,8 @@ with tab_results:
                 # File downloads
                 st.markdown("**Files:**")
                 for fp in sorted(locus_dir.glob("*")):
-                    if fp.is_file() and fp.suffix in (".fasta", ".gff3", ".nex", ".log"):
+                    if (fp.is_file() and not fp.name.startswith("_")
+                            and fp.suffix in (".fasta", ".gff3", ".nex", ".log")):
                         with open(fp, "rb") as f:
                             st.download_button(
                                 f"⬇️ {fp.name}", data=f,
@@ -1017,7 +1205,7 @@ with tab_results:
         by_locus: dict = {}
         for cf in combined_files:
             stem = cf.stem.replace("_combined", "")
-            for kind in ["_CDS", "_genomic", "_introns"]:
+            for kind in ["_CDS", "_protein", "_genomic", "_introns"]:
                 if stem.endswith(kind):
                     locus = stem[:-len(kind)]
                     by_locus.setdefault(locus, {})[kind.strip("_")] = cf

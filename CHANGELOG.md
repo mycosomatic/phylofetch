@@ -5,6 +5,32 @@
 
 ## 2026-06-19
 
+- **Exonerate frame-safe CDS + gene-of-interest extraction (D-008, addresses RM-002).**
+  New module `src/phylofetch/exonerate_utils.py`: `run_exonerate` (RunManager-logged),
+  `parse_exonerate_gff` (verbatim Exonerate 2.4.0 GFF + `--ryo %tcs` parsing, multi-result
+  aware), `select_best_model` (paralog disambiguation), `validate_cds` (reading-frame /
+  internal-stop QC), `build_result_from_model` (rebuilds the shared result-dict shape from
+  GFF coords; plus/minus-strand correct), `write_exonerate_fastas` (CDS / protein / genomic
+  / introns) and `extract_locus_exonerate` (hybrid: tblastn/blastn narrows to the best
+  contig, then `protein2genome`/`coding2genome` refines; whole-assembly fallback). Reuses
+  `write_gff3` / `write_codon_partition` from `blast_loci_utils`. Validated end-to-end
+  against the installed exonerate binary on both strands and the nucleotide-CDS model.
+- **Loci Extraction page (`pages/2_Loci_Extraction.py`).** The strict coding strategy is now
+  **"Coding loci – Exonerate (frame-safe)"**: BLAST narrows, Exonerate refines, with a
+  visible BLAST-HSP fallback + frame-safety warning when `exonerate` is absent. Added
+  Exonerate settings (max/min intron, `--bestn` paralogs, refine, genetic code, strict QC,
+  narrow toggle), an `exonerate` tool-check row, a **"Gene of interest"** input
+  (paste/upload an ortholog → CDS), and Results-tab surfacing of the translated protein +
+  a CDS frame/stop QC badge. Catalogue loci and genes-of-interest share one logged code path.
+- **`blast_loci_utils.py`.** `extract_from_hsps` documented as the **fallback** for coding
+  CDS (Exonerate preferred; D-008), still primary for the relaxed PCR-amplicon strategy.
+  `merge_per_strain_outputs` now also merges the translated `*_protein.fasta`.
+- **`environment.yml`.** Added `bioconda::exonerate=2.4.0` (not a pip package; no
+  `pyproject.toml` runtime-dependency change).
+- **Tests.** `tests/test_exonerate_utils.py` — 23 tests (offline parser/QC/build against
+  committed verbatim fixtures in `tests/fixtures/`, plus an exonerate-binary-guarded
+  end-to-end class). Full suite **139 passing** (was 116).
+
 - **UI legibility — Recovery summary table (`pages/2_Loci_Extraction.py`).** The per-strain ×
   per-locus CDS-length matrix styled each cell with a pastel background
   (`#c8e6c9` found / `#ffcdd2` missing) but set **no text color**, so under Streamlit's dark

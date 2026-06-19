@@ -50,8 +50,10 @@ phylofetch/
 │   ├── blast_loci_utils.py
 │   ├── busco_utils.py
 │   ├── config.py          # ~/.phylofetch/config.json
+│   ├── exonerate_utils.py # spliced protein/CDS→genome, frame-safe CDS (D-008)
 │   ├── itsx_utils.py
 │   ├── ncbi_utils.py
+│   ├── primer_utils.py
 │   └── project_manager.py # RunManager, tool version probing
 ├── pages/                 # Streamlit multi-page app
 │   ├── 0_Project_Setup.py
@@ -64,7 +66,9 @@ phylofetch/
 │   ├── conftest.py
 │   ├── test_assembly_utils.py
 │   ├── test_blast_loci_utils.py  # MUST cover LXD-002 regression
-│   └── test_itsx_utils.py        # MUST cover LXD-001 fixes
+│   ├── test_itsx_utils.py        # MUST cover LXD-001 fixes
+│   ├── test_exonerate_utils.py   # parser/QC/build offline + binary-guarded E2E (D-008)
+│   └── fixtures/                 # verbatim exonerate 2.4.0 output + synthetic gene
 ├── app.py                 # streamlit run app.py
 ├── pyproject.toml
 └── environment.yml
@@ -104,9 +108,18 @@ pytest tests/ -v --cov=phylofetch --cov-report=term-missing
 
 Three selectable strategies drive loci extraction:
 
-1. **BLAST – PCR amplicon refs (relaxed)** — NCBI amplicon refs, skips the CDS completeness gate (`require_complete_cds=False`).
-2. **BLAST – CDS / protein (strict)** — curated CDS/protein refs; enforces `min_cds_pct_of_ref`. ITSx handles rDNA.
+1. **BLAST – PCR amplicon refs (relaxed)** — NCBI amplicon refs, skips the CDS completeness gate (`require_complete_cds=False`). Uses `blast_loci_utils.extract_from_hsps` (genomic amplicon, no frame guarantee — this is its primary, legitimate use).
+2. **Coding loci – Exonerate (frame-safe)** — `exonerate_utils.py`. tblastn/blastn narrows to the best contig, then Exonerate spliced alignment (`protein2genome` / `coding2genome`, auto-picked) refines exon/intron boundaries and yields a translatable, frame-checked CDS. ITSx still handles rDNA. Falls back to `extract_from_hsps` **with a frame-safety warning** when `exonerate` is not on PATH. Supersedes the old "BLAST – CDS / protein (strict)" path for coding CDS (D-008, addresses RM-002).
 3. **PCR Primers (in-silico PCR)** — `primer_utils.py`. Locate fwd+rev primer binding sites with `blastn-short`, pair them on the same contig with opposite strands, extract the amplicon between. No NCBI reference library needed — useful when accessions are missing or map poorly.
+
+### Exonerate library (`exonerate_utils.py`) — D-008
+- **Hybrid pipeline**: `extract_locus_exonerate` narrows via `select_best_locus_group` to the single best contig (coords stay in contig space → no offset math), then runs Exonerate on that contig; `narrow=False` / no BLAST hit ⇒ whole-assembly run.
+- **Models**: `protein2genome` (protein query) / `coding2genome` (nucleotide CDS query), via `MODEL_FOR_QUERYTYPE` keyed on `detect_fasta_type`.
+- **Parsing**: `parse_exonerate_gff` reads verbatim `--showtargetgff yes` GFF (one result per `START…END OF GFF DUMP` block) + a `--ryo` line whose `%tcs` is the authoritative spliced CDS (cross-checked against the coord-rebuilt CDS). Exonerate emits introns + splice5/splice3 explicitly (no gap inference). `--bestn N` surfaces paralogs (`select_best_model` returns `(best, others)`).
+- **QC (RM-002)**: `validate_cds` reports reading-frame (`len % 3`), internal-stop count, translation; the per-locus log records a PASS/REVIEW verdict and GT-AG tally. Default = write-and-flag; `strict_qc=True` rejects internal-stop / frameshift CDS (D-007: don't silently drop partial/type seqs).
+- **Outputs**: `LOCUS_CDS/protein/genomic/introns.fasta`, `LOCUS.gff3`, `LOCUS_partition.nex`, `LOCUS_extraction.log` (GFF3 + partition writers reused from `blast_loci_utils`).
+- **Gene of interest**: the Run-Extraction page also accepts an arbitrary pasted/uploaded ortholog (protein or CDS) → returns just the CDS + exon model, sharing the same logged code path as catalogue loci.
+- **Provenance**: Exonerate runs route through RunManager (`run_exonerate`, `tool_version_keys=["exonerate"]`). Install via `conda install -c bioconda exonerate` (also pinned in `environment.yml`).
 
 ### Primer library (`primer_utils.py` + `data/primers.json`)
 - **Citable, packaged catalogue**: `src/phylofetch/data/primers.json` ships via `[tool.setuptools.package-data]`. Every pair carries `source`, `citation`, `reference_url` (primary literature; rDNA cross-checked vs UNITE). 14 pairs across ITS/SSU/LSU/TEF1/RPB2/TUB2/ACT/CAL/HIS3/GAPDH.
@@ -123,8 +136,9 @@ Three selectable strategies drive loci extraction:
 - **Rich FASTA headers**: NCBI bracket-style `[key=value]` for all outputs
 - **RunManager**: every external tool call logged with command + tool versions + timestamps
 - **Per-locus extraction logs**: `LOCUS_extraction.log` alongside FASTAs
+- **Frame-safe coding CDS**: Exonerate spliced alignment is the preferred coding-locus path (D-008); `extract_from_hsps` HSP-as-exon is a *documented fallback* for coding CDS (still primary for relaxed PCR-amplicon), used only when `exonerate` is absent, with a UI frame-safety warning
 - **Alignment viewer**: BLAST `-outfmt 0` pairwise text in `st.code()` (no extra deps)
-- **MACSE**: optional Java JAR; graceful fallback if not configured
+- **Exonerate / ITSx / MACSE**: optional external tools; graceful fallback if not on PATH
 - **src layout**: `sys.path.insert(0, .../src)` in pages for dev mode; package importable after `pip install -e .`
 
 ## Plug-in architecture

@@ -42,6 +42,14 @@ user's decisions in that session.
   splice-site validation to `blast_loci_utils`; use the GT-AG signal as a gate, not just a
   log line; add paralog awareness; route its BLAST call through RunManager. Prevents silent
   corruption of protein-coding loci.
+  - _(2026-06-19) — substantially addressed by **D-008**:_ `exonerate_utils.py` replaces
+    HSP-as-exon stitching for coding loci with Exonerate spliced alignment (frame-safe CDS,
+    explicit GT-AG introns), adds translation / `len % 3` / internal-stop QC + `%tcs`
+    cross-check, and `--bestn` paralog awareness. Exonerate calls route through RunManager.
+    The HSP path is demoted to a documented fallback. _Remaining RM-002 follow-ups:_ apply
+    the same frame/stop QC to the relaxed BLAST-amplicon path, and route the Exonerate
+    contig-narrowing BLAST through RunManager too (currently only the Exonerate call is
+    logged).
 - **RM-003 (2026-06-18) — Species-delimitation workflow.** Treat per-locus alignments as
   first-class: per-locus gene trees + a concordance/conflict view (GCPSR), instead of
   defaulting to the concatenated supermatrix for the novelty goal.
