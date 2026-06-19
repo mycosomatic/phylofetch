@@ -31,6 +31,9 @@ Thumbs.db
 *.bai
 *.log
 !docs/*.md
+# …except small synthetic test fixtures, which are required test data
+!tests/fixtures/*.fasta
+!tests/fixtures/*.fa
 
 # User config / project workspace
 .env

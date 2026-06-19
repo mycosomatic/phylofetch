@@ -29,7 +29,7 @@ def run_mafft(
       'localpair'  — L-INS-i (accurate, slower; good for short conserved regions)
       'globalpair' — G-INS-i (for globally alignable sequences)
       'genafpair'  — E-INS-i (for sequences with unalignable regions)
-      'retree 2'   — FFT-NS-2 (fast, for many sequences)
+      'retree2'    — FFT-NS-2 (fast, for many sequences)
 
     Returns (returncode, alignment_text_or_error).
     """
@@ -43,7 +43,7 @@ def run_mafft(
         "localpair":  ["--localpair", "--maxiterate", "1000"],
         "globalpair": ["--globalpair", "--maxiterate", "1000"],
         "genafpair":  ["--genafpair", "--maxiterate", "1000"],
-        "retree 2":   ["--retree", "2"],
+        "retree2":    ["--retree", "2"],
     }
     flags = mode_flags.get(mode, ["--auto"])
     cmd = [mafft_bin] + flags + ["--thread", str(threads)]

@@ -27,9 +27,17 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-DEFAULT_PROJECT_DIR = Path.home() / ".phylofetch" / "projects" / "default"
+DEFAULT_PROJECTS_ROOT = Path.home() / ".phylofetch" / "projects"
+DEFAULT_PROJECT_DIR = DEFAULT_PROJECTS_ROOT / "default"
 
 PROJECT_SUBDIRS = ("metadata", "runs", "results", "scratch", "logs")
+
+# Columns for the human-readable assembly manifest (metadata/assembly_manifest.tsv).
+ASSEMBLY_MANIFEST_FIELDS = [
+    "strain_id", "assembly_path", "assembler", "num_contigs", "n50",
+    "total_length_mb", "gc_percent", "quast_report", "busco_dir",
+    "busco_completeness", "registered_at",
+]
 
 
 @dataclass
@@ -87,6 +95,7 @@ def init_project(project_dir: str | Path) -> Path:
     manifest = root / "metadata" / "project_manifest.json"
     if not manifest.exists():
         save_json(manifest, {
+            "name": root.name,
             "created_at": now_iso(),
             "project_dir": str(root),
             "schema_version": 1,
@@ -207,6 +216,135 @@ def check_tools(tool_map: Mapping[str, str]) -> list[ToolStatus]:
             resolved_path=resolved, version=version,
         ))
     return statuses
+
+
+# ── Assembly registry persistence ───────────────────────────────────────────
+#
+# Each project stores its own re-openable assembly registry:
+#   <project>/metadata/assemblies.json        machine-readable (full records)
+#   <project>/metadata/assembly_manifest.tsv  human-readable log of file paths
+#
+# This is the durable record of *where every assembly and associated file lives*
+# — it survives across sessions and can be re-opened as a named project.
+
+def _assembly_record_to_row(strain_id: str, rec: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    Flatten one assembly record into a manifest row. Tolerant of both the
+    flat schema (Project Setup import) and the nested ``stats`` schema
+    (Assembly Manager import).
+    """
+    stats = rec.get("stats") if isinstance(rec.get("stats"), Mapping) else {}
+    stats = stats or {}
+
+    def pick(*keys: str, default: Any = "") -> Any:
+        for k in keys:
+            if rec.get(k) not in (None, ""):
+                return rec[k]
+            if stats.get(k) not in (None, ""):
+                return stats[k]
+        return default
+
+    quast = stats.get("quast") if isinstance(stats.get("quast"), Mapping) else None
+    quast_report = (rec.get("quast_report") or stats.get("quast_report")
+                    or ("(found)" if quast else ""))
+
+    busco = rec.get("busco_dir") or rec.get("busco_dirs") or ""
+    if isinstance(busco, (list, tuple)):
+        busco = ";".join(str(b) for b in busco)
+
+    busco_info = rec.get("busco")
+    busco_pct = ""
+    if isinstance(busco_info, Mapping):
+        cp = busco_info.get("completeness_pct")
+        busco_pct = cp if cp not in (None, "") else ""
+
+    return {
+        "strain_id":          strain_id,
+        "assembly_path":      pick("assembly_path"),
+        "assembler":          pick("assembler"),
+        "num_contigs":        pick("num_contigs"),
+        "n50":                pick("n50"),
+        "total_length_mb":    pick("total_length_mb"),
+        "gc_percent":         pick("gc_percent", "mean_gc"),
+        "quast_report":       quast_report,
+        "busco_dir":          busco,
+        "busco_completeness": busco_pct,
+        "registered_at":      rec.get("registered_at", ""),
+    }
+
+
+def save_assembly_registry(project_dir: str | Path,
+                           assemblies: Mapping[str, Any]) -> Path:
+    """
+    Persist the assembly registry into a project as both a JSON record and a
+    human-readable TSV manifest. Returns the project root.
+    """
+    root = init_project(project_dir)
+    meta = root / "metadata"
+    save_json(meta / "assemblies.json", dict(assemblies))
+    rows = [_assembly_record_to_row(sid, rec) for sid, rec in assemblies.items()]
+    write_tsv_rows(meta / "assembly_manifest.tsv", rows, ASSEMBLY_MANIFEST_FIELDS)
+    return root
+
+
+# Stats fields written by the old page-0 flat schema (before consolidation).
+_FLAT_STAT_KEYS = frozenset({
+    "assembler", "num_contigs", "total_length_bp", "total_length_mb",
+    "n50", "l50", "largest_contig", "mean_gc", "gc_percent",
+    "mean_coverage_header", "contigs", "quast", "quast_report",
+})
+
+
+def _migrate_assembly_record(sid: str, record: dict) -> dict:
+    """
+    Normalize legacy flat-format records to the nested-stats schema.
+
+    Old page-0 schema stored stats at the top level; canonical schema wraps
+    them under ``"stats"``. Records already in the canonical form pass through.
+    Also renames ``gc_percent`` → ``mean_gc`` for consistency with
+    ``assembly_utils.get_assembly_stats()`` output.
+    """
+    if isinstance(record.get("stats"), dict):
+        return record
+    stats = {k: v for k, v in record.items() if k in _FLAT_STAT_KEYS}
+    clean = {k: v for k, v in record.items() if k not in _FLAT_STAT_KEYS}
+    if "gc_percent" in stats and "mean_gc" not in stats:
+        stats["mean_gc"] = stats.pop("gc_percent")
+    else:
+        stats.pop("gc_percent", None)
+    clean["stats"] = stats
+    clean.setdefault("strain_id", sid)
+    return clean
+
+
+def load_assembly_registry(project_dir: str | Path) -> dict:
+    """Load a project's saved assembly registry (empty dict if none)."""
+    raw = load_json(Path(project_dir) / "metadata" / "assemblies.json", {})
+    return {sid: _migrate_assembly_record(sid, rec) for sid, rec in raw.items()}
+
+
+def list_projects(projects_root: str | Path | None = None) -> list[dict]:
+    """
+    Enumerate phylofetch projects under ``projects_root`` (default
+    ~/.phylofetch/projects). Returns name, path, created_at, and assembly count.
+    """
+    root = Path(projects_root) if projects_root else DEFAULT_PROJECTS_ROOT
+    projects: list[dict] = []
+    if not root.exists():
+        return projects
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        manifest = d / "metadata" / "project_manifest.json"
+        if not manifest.exists():
+            continue
+        info = load_json(manifest, {})
+        registry = load_json(d / "metadata" / "assemblies.json", {})
+        projects.append({
+            "name":         info.get("name", d.name),
+            "path":         str(d),
+            "created_at":   info.get("created_at", "?"),
+            "n_assemblies": len(registry),
+        })
+    return projects
 
 
 class RunManager:

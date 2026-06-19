@@ -1,0 +1,146 @@
+Command line: [exonerate --model protein2genome --query tests/fixtures/ref_protein.fasta --target tests/fixtures/contig_two.fasta --showtargetgff yes --showalignment no --showvulgar no --bestn 5 --minintron 20 --maxintron 2000 --ryo >RYO\t%qi\t%ti\t%s\t%pi\t%ql\t%qab\t%qae\t%tcb\t%tce\n%tcs\n]
+Hostname: [pop-os]
+# --- START OF GFF DUMP ---
+#
+#
+##gff-version 2
+##source-version exonerate:protein2genome:local 2.4.0
+##date 2026-06-19
+##type DNA
+#
+#
+# seqname source feature start end score strand frame attributes
+#
+contig_two	exonerate:protein2genome:local	gene	46	403	507	+	.	gene_id 0 ; sequence refprot ; gene_orientation + ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	cds	46	195	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	46	195	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	splice5	196	197	.	+	.	intron_id 1 ; splice_site "GT"
+contig_two	exonerate:protein2genome:local	intron	196	253	.	+	.	intron_id 1
+contig_two	exonerate:protein2genome:local	splice3	252	253	.	+	.	intron_id 0 ; splice_site "AG"
+contig_two	exonerate:protein2genome:local	cds	254	403	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	254	403	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	similarity	46	403	507	+	.	alignment_id 0 ; Query refprot ; Align 46 1 150 ; Align 254 51 150
+# --- END OF GFF DUMP ---
+#
+>RYO	refprot	contig_two	507	100.00	100	0	100	45	400
+ATGCCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTAGCC
+GAGCCTCAACACATGAAGTCTGTATCCGTGGATCTACTCCGGATTACAAGCACCTGGGTTGGAGGCGCGC
+GTCCACCCCACCGGATTACAAGCACCTGGGTTGGAGGCGCGCGTCCACCCCAGACGTGAAAATTCTAGGC
+TTCAGACCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTA
+GCCGAGCCTCAACACATGAA
+
+# --- START OF GFF DUMP ---
+#
+#
+##gff-version 2
+##source-version exonerate:protein2genome:local 2.4.0
+##date 2026-06-19
+##type DNA
+#
+#
+# seqname source feature start end score strand frame attributes
+#
+contig_two	exonerate:protein2genome:local	gene	614	971	507	+	.	gene_id 0 ; sequence refprot ; gene_orientation + ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	cds	614	763	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	614	763	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	splice5	764	765	.	+	.	intron_id 1 ; splice_site "GT"
+contig_two	exonerate:protein2genome:local	intron	764	821	.	+	.	intron_id 1
+contig_two	exonerate:protein2genome:local	splice3	820	821	.	+	.	intron_id 0 ; splice_site "AG"
+contig_two	exonerate:protein2genome:local	cds	822	971	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	822	971	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	similarity	614	971	507	+	.	alignment_id 0 ; Query refprot ; Align 614 1 150 ; Align 822 51 150
+# --- END OF GFF DUMP ---
+#
+>RYO	refprot	contig_two	507	100.00	100	0	100	613	968
+ATGCCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTAGCC
+GAGCCTCAACACATGAAGTCTGTATCCGTGGATCTACTCCGGATTACAAGCACCTGGGTTGGAGGCGCGC
+GTCCACCCCACCGGATTACAAGCACCTGGGTTGGAGGCGCGCGTCCACCCCAGACGTGAAAATTCTAGGC
+TTCAGACCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTA
+GCCGAGCCTCAACACATGAA
+
+# --- START OF GFF DUMP ---
+#
+#
+##gff-version 2
+##source-version exonerate:protein2genome:local 2.4.0
+##date 2026-06-19
+##type DNA
+#
+#
+# seqname source feature start end score strand frame attributes
+#
+contig_two	exonerate:protein2genome:local	gene	1	192	154	+	.	gene_id 0 ; sequence refprot ; gene_orientation . ; identity 62.30 ; similarity 67.21
+contig_two	exonerate:protein2genome:local	cds	1	192	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	1	192	.	+	.	insertions 9 ; deletions 0 ; identity 62.30 ; similarity 67.21
+contig_two	exonerate:protein2genome:local	similarity	1	192	154	+	.	alignment_id 0 ; Query refprot ; Align 1 38 39 ; Align 49 51 144
+# --- END OF GFF DUMP ---
+#
+>RYO	refprot	contig_two	154	62.30	100	37	98	0	189
+GATTACAAGCACCTGGGTTGGAGGCGCGCGTCCACCCCAGACGTGATGCCTGCATATAATCAGCTTGTAT
+GCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTAGCCGAGCCTCAACACATGAAGTCTGTAT
+CCGTGGATCTACTCCGGATTACAAGCACCTGGGTTGGAGGCGCGCGTCCACC
+
+# --- START OF GFF DUMP ---
+#
+#
+##gff-version 2
+##source-version exonerate:protein2genome:local 2.4.0
+##date 2026-06-19
+##type DNA
+#
+#
+# seqname source feature start end score strand frame attributes
+#
+contig_two	exonerate:protein2genome:local	gene	49	132	146	+	.	gene_id 0 ; sequence refprot ; gene_orientation . ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	cds	49	132	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	49	132	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	similarity	49	132	146	+	.	alignment_id 0 ; Query refprot ; Align 49 73 84
+# --- END OF GFF DUMP ---
+#
+>RYO	refprot	contig_two	146	100.00	100	72	100	48	129
+CCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTAGCCGAG
+CCTCAACACATGAA
+
+# --- START OF GFF DUMP ---
+#
+#
+##gff-version 2
+##source-version exonerate:protein2genome:local 2.4.0
+##date 2026-06-19
+##type DNA
+#
+#
+# seqname source feature start end score strand frame attributes
+#
+contig_two	exonerate:protein2genome:local	gene	320	403	146	+	.	gene_id 0 ; sequence refprot ; gene_orientation . ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	cds	320	403	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	320	403	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	similarity	320	403	146	+	.	alignment_id 0 ; Query refprot ; Align 320 2 84
+# --- END OF GFF DUMP ---
+#
+>RYO	refprot	contig_two	146	100.00	100	1	29	319	400
+CCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTAGCCGAG
+CCTCAACACATGAA
+
+# --- START OF GFF DUMP ---
+#
+#
+##gff-version 2
+##source-version exonerate:protein2genome:local 2.4.0
+##date 2026-06-19
+##type DNA
+#
+#
+# seqname source feature start end score strand frame attributes
+#
+contig_two	exonerate:protein2genome:local	gene	888	971	146	+	.	gene_id 0 ; sequence refprot ; gene_orientation . ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	cds	888	971	.	+	.	
+contig_two	exonerate:protein2genome:local	exon	888	971	.	+	.	insertions 0 ; deletions 0 ; identity 100.00 ; similarity 100.00
+contig_two	exonerate:protein2genome:local	similarity	888	971	146	+	.	alignment_id 0 ; Query refprot ; Align 888 2 84
+# --- END OF GFF DUMP ---
+#
+>RYO	refprot	contig_two	146	100.00	100	1	29	887	968
+CCTGCATATAATCAGCTTGTATGCAGTCGGGCTTCGACGCCCGAGGTTAACCAACTCGGGTTTAGCCGAG
+CCTCAACACATGAA
+
+-- completed exonerate analysis
