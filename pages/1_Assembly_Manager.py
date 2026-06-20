@@ -25,9 +25,12 @@ from phylofetch.busco_utils import scan_busco_run
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
+    effective_taxon,
     load_assembly_registry,
+    load_project_manifest,
     now_iso,
     save_assembly_registry,
+    set_default_taxon,
 )
 
 # ── Page setup ───────────────────────────────────────────────────────────────
@@ -95,11 +98,43 @@ def _build_record(sid: str, path: str, busco_dir: str = "",
     return {
         "strain_id":     sid,
         "assembly_path": path,
+        "taxon":         "",
+        "taxon_source":  "",
         "busco_dir":     busco_dir,
         "busco":         _parse_busco_dir(busco_dir),
         "stats":         stats,
         "registered_at": now_iso(),
     }
+
+
+# ── Project-level default taxon (D-012 / RM-007 step 2) ───────────────────────
+# The closest taxon for the project as a whole: the fallback for any assembly without
+# its own override, and the default organism for NCBI reference searches. Stored in the
+# project manifest, not the assembly registry.
+_proj = _active_project()
+default_taxon = load_project_manifest(_proj).get("default_taxon", "")
+with st.expander("🧬 Project taxonomy (default taxon)", expanded=not default_taxon):
+    cda, cdb = st.columns([3, 1])
+    with cda:
+        _new_default = st.text_input(
+            "Project default taxon",
+            value=default_taxon,
+            placeholder="e.g. Alternaria — closest taxon for the whole project",
+            help="Fallback taxon for every assembly without an override, and the default "
+                 "organism for NCBI reference searches. Override individual assemblies in "
+                 "the Registered Assemblies tab.",
+            key="default_taxon_input",
+        )
+    with cdb:
+        st.write(""); st.write("")
+        if st.button("💾 Save default taxon"):
+            set_default_taxon(_proj, _new_default)
+            st.success("Saved.")
+            st.rerun()
+    if default_taxon:
+        st.caption(f"Current project default: **{default_taxon}**")
+    else:
+        st.caption("No project default set — give assemblies their own taxon, or set one here.")
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -414,9 +449,14 @@ with tab_list:
             s = d.get("stats", {}) or {}
             b = d.get("busco", {}) or {}
             cp = b.get("completeness_pct")
+            own_tax = (d.get("taxon") or "").strip()
+            tax_src = (d.get("taxon_source", "") if own_tax
+                       else ("default" if default_taxon else ""))
             rows.append(
                 {
                     "Strain ID":   sid,
+                    "Taxon":       effective_taxon(d, default_taxon) or "—",
+                    "Source":      tax_src or "—",
                     "Total (Mb)":  s.get("total_length_mb", "—"),
                     "Contigs":     s.get("num_contigs", "—"),
                     "N50 (bp)":    s.get("n50", "—"),
@@ -472,6 +512,31 @@ with tab_list:
                     else:
                         st.success("BUSCO directory saved.")
                     st.rerun()
+
+            with st.form(f"taxon_{selected}"):
+                _own = (d.get("taxon") or "").strip()
+                new_taxon = st.text_input(
+                    "Per-assembly taxon override",
+                    value=_own,
+                    placeholder=(f"blank = use project default ('{default_taxon}')"
+                                 if default_taxon else "closest taxon for this assembly"),
+                    help="Overrides the project default for this assembly only. "
+                         "Leave blank to inherit the project default.",
+                )
+                if st.form_submit_button("💾 Save taxon"):
+                    nt = new_taxon.strip()
+                    st.session_state.assemblies[selected]["taxon"] = nt
+                    st.session_state.assemblies[selected]["taxon_source"] = "manual" if nt else ""
+                    _save()
+                    st.success("Taxon saved." if nt else "Override cleared — using project default.")
+                    st.rerun()
+            _eff = effective_taxon(d, default_taxon)
+            if (d.get("taxon") or "").strip():
+                st.caption(f"Effective taxon: **{_eff or '—'}** · source: {d.get('taxon_source', 'manual')}")
+            elif default_taxon:
+                st.caption(f"Effective taxon: **{_eff}** · inherited from project default")
+            else:
+                st.caption("No taxon set for this assembly or project.")
 
             mc1, mc2 = st.columns(2)
             with mc1:

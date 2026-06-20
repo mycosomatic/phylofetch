@@ -5,6 +5,15 @@
 
 ## 2026-06-20
 
+- **Assembly taxonomy UI (RM-007 step 2).** `pages/1_Assembly_Manager.py`: a project-level
+  **default taxon** control (manifest-backed via `set_default_taxon`, shown in an expander that
+  opens until set) and a **per-assembly taxon override** in the Manage-assembly section
+  (session-mutate + existing `_save()` path), plus **Taxon / Source** columns in the
+  registered-assemblies summary showing the effective taxon (`effective_taxon`) and whether it
+  is a manual override or inherited from the project default. New records carry
+  `taxon`/`taxon_source`. No new `src` logic — reuses the increment-1 manifest helpers.
+  Verified end-to-end on a temp project (default + override round-trip, incl. the TSV);
+  185 tests still passing (UI not unit-tested).
 - **Workflow architecture — manifest schema (D-012 / RM-007 step 1).** First increment of the
   component-page + manifest-chained workflow; pure data layer, no UI yet.
   - `project_manager.py`: project manifest bumped to **schema v2** — adds a project-level

@@ -92,8 +92,12 @@ user's decisions in that session.
   - _(2026-06-20) Step 1 (manifest schema) **done**:_ project manifest v2 (`default_taxon` +
     `workflow`/step-state block), per-assembly `taxon`/`taxon_source`, and the helper API
     (`load_project_manifest`, `update_step`, `set_assembly_taxon`, `effective_taxon`, …) landed
-    in `project_manager.py` with 16 tests. Backward-compatible / read-tolerant. Next: step 2
-    (Assembly Manager taxonomy UI).
+    in `project_manager.py` with 16 tests. Backward-compatible / read-tolerant.
+  - _(2026-06-20) Step 2 (Assembly Manager taxonomy UI) **done**:_ project-default taxon
+    control + per-assembly override + Taxon/Source summary columns in
+    `pages/1_Assembly_Manager.py`, reusing the step-1 helpers. Next: step 3 (ITS→BLAST
+    provisional-ID feeder) — its ID-search approach (remote NCBI vs local DB) and the D-013
+    references decision are the next things to settle.
 
 ### Review findings — risk register (2026-06-18)
 
