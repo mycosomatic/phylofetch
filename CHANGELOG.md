@@ -5,6 +5,19 @@
 
 ## 2026-06-20
 
+- **ITS-based provisional taxon ID (D-014 / RM-007 step 3).** New
+  `src/phylofetch/taxon_id_utils.py` and an "Identify taxon by ITS (NCBI remote BLAST)" control
+  in the Assembly Manager: ITSx pulls the ITS region, `blastn -remote -db nt` (optionally
+  fungi-restricted) finds the closest organisms, and the user picks one → sets the assembly
+  taxon with `taxon_source="its_blast"`.
+  - **Organism resolution finding:** `sscinames` is resolved from a *local* BLAST taxdb even
+    under `-remote`, so it returns `N/A`/`N/A;N/A` without taxdb installed. The organism is
+    therefore derived from the subject title (`stitle`), preferring a real `sscinames` when
+    present; ";"-joined `N/A` handled. Avoids forcing a large taxdb download.
+  - Remote call routed through RunManager (provenance); pure command-build / parse / rank split
+    out for testing. ITSx absence and BLAST errors surface cleanly in the UI.
+  - Tests: 15 network-free (`tests/test_taxon_id_utils.py`); **live-verified** against NCBI
+    (Alternaria ITS → *Alternaria alternata* 100 %). **200 passing** (was 185).
 - **Assembly taxonomy UI (RM-007 step 2).** `pages/1_Assembly_Manager.py`: a project-level
   **default taxon** control (manifest-backed via `set_default_taxon`, shown in an expander that
   opens until set) and a **per-assembly taxon override** in the Manage-assembly section

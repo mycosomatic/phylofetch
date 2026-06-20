@@ -95,9 +95,12 @@ user's decisions in that session.
     in `project_manager.py` with 16 tests. Backward-compatible / read-tolerant.
   - _(2026-06-20) Step 2 (Assembly Manager taxonomy UI) **done**:_ project-default taxon
     control + per-assembly override + Taxon/Source summary columns in
-    `pages/1_Assembly_Manager.py`, reusing the step-1 helpers. Next: step 3 (ITS→BLAST
-    provisional-ID feeder) — its ID-search approach (remote NCBI vs local DB) and the D-013
-    references decision are the next things to settle.
+    `pages/1_Assembly_Manager.py`, reusing the step-1 helpers.
+  - _(2026-06-20) Step 3 (ITS→BLAST provisional-ID feeder) **done** (D-014):_ remote NCBI
+    `blastn` of the ITSx ITS region with a ranked-organism picker in the Assembly Manager;
+    chosen taxon written with `taxon_source=its_blast`. New `src/phylofetch/taxon_id_utils.py`
+    + 15 tests; live-verified against NCBI. Next: step 4 (component pages) — this reaches the
+    **D-013** references global/per-project decision, so settle that first.
 
 ### Review findings — risk register (2026-06-18)
 

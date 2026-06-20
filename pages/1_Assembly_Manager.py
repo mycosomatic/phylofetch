@@ -25,6 +25,7 @@ from phylofetch.busco_utils import scan_busco_run
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
+    RunManager,
     effective_taxon,
     load_assembly_registry,
     load_project_manifest,
@@ -32,6 +33,7 @@ from phylofetch.project_manager import (
     save_assembly_registry,
     set_default_taxon,
 )
+from phylofetch.taxon_id_utils import identify_taxon_from_assembly
 
 # ── Page setup ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -537,6 +539,54 @@ with tab_list:
                 st.caption(f"Effective taxon: **{_eff}** · inherited from project default")
             else:
                 st.caption("No taxon set for this assembly or project.")
+
+            with st.expander("🔬 Identify taxon by ITS (NCBI remote BLAST)"):
+                st.caption(
+                    "Runs ITSx to pull the ITS region from this assembly, then BLASTs it "
+                    "against NCBI `nt` remotely and suggests the closest organism. Needs "
+                    "internet and the ITSx + blastn binaries; can take several minutes."
+                )
+                restrict_fungi = st.checkbox(
+                    "Restrict to fungi", value=True, key=f"itsfungi_{selected}",
+                    help="Adds fungi[ORGN] to the remote search — faster and more relevant.",
+                )
+                if st.button("🔬 Run ITS identification", key=f"itsid_run_{selected}"):
+                    rm = RunManager(_proj)
+                    work = str(Path(_proj) / "scratch" / "itsx_id" / selected)
+                    with st.spinner("ITSx + remote NCBI BLAST… (this can take several minutes)"):
+                        st.session_state[f"itsid_res_{selected}"] = identify_taxon_from_assembly(
+                            d.get("assembly_path", ""), work, selected, run_manager=rm,
+                            entrez_query="fungi[ORGN]" if restrict_fungi else "",
+                        )
+                res = st.session_state.get(f"itsid_res_{selected}")
+                if res:
+                    if not res.get("ok"):
+                        st.error(f"{res.get('stage', 'error')}: {res.get('error', 'failed')}")
+                        if res.get("itsx_log"):
+                            with st.expander("ITSx log"):
+                                st.code(res["itsx_log"])
+                    elif not res.get("hits"):
+                        st.warning("No organism hits returned by remote BLAST.")
+                    else:
+                        st.success(
+                            f"ITS region **{res['its_region']}** "
+                            f"({res.get('its_length', '?')} bp) · {len(res['hits'])} candidate taxa"
+                        )
+                        dfh = pd.DataFrame([
+                            {"Organism": h["organism"], "% ident": h["pident"],
+                             "Accession": h["accession"], "Bitscore": h["bitscore"]}
+                            for h in res["hits"]
+                        ])
+                        st.dataframe(dfh, width="stretch", hide_index=True)
+                        orgs = [h["organism"] for h in res["hits"]]
+                        pick = st.selectbox("Set taxon from a hit", orgs,
+                                            key=f"itspick_{selected}")
+                        if st.button("✅ Use this taxon", key=f"ituse_{selected}"):
+                            st.session_state.assemblies[selected]["taxon"] = pick
+                            st.session_state.assemblies[selected]["taxon_source"] = "its_blast"
+                            _save()
+                            st.success(f"Set taxon to '{pick}' (source: its_blast).")
+                            st.rerun()
 
             mc1, mc2 = st.columns(2)
             with mc1:

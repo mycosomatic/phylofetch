@@ -328,3 +328,28 @@ Format for each entry:
   monolithic page is retained until the new pages reach parity. **Open sub-decision:**
   reference library **global vs per-project** (global cache + per-project selection/provenance
   is the leading option) — to be resolved as **D-013** before the References-page increment.
+
+### D-014 (2026-06-20) — ITS-based provisional taxon ID via remote NCBI BLAST
+- **Decision:** The Assembly Manager's "Identify taxon by ITS" feeder (RM-007 step 3) extracts
+  the ITS region with **ITSx**, then identifies the closest taxon by **`blastn -remote -db nt`**
+  against NCBI (optionally restricted with `entrez_query="fungi[ORGN]"`), surfacing ranked
+  candidate organisms for the user to pick; the chosen organism is written to the assembly with
+  `taxon_source="its_blast"`. New module `taxon_id_utils.py` provides pure command-building,
+  output parsing, and organism ranking, a RunManager-logged remote-BLAST call, and the
+  ITSx→BLAST orchestration. Organism names come from the subject title (`stitle`), preferring
+  `sscinames` only when a real local taxdb name is present.
+- **Why:** The user chose **remote NCBI** (2026-06-20) for zero-setup, broad, cold-start ID —
+  no local database is needed *before* references are fetched, which resolves the
+  taxonomy↔reference chicken-and-egg. Verified live (blastn 2.x): an *Alternaria* ITS resolves
+  to *Alternaria alternata* at 100 %. **Implementation finding:** `sscinames` is resolved from a
+  *local* BLAST taxdb even under `-remote`, so without taxdb installed (the default) it returns
+  `N/A` / `N/A;N/A`; deriving the organism from `stitle` avoids forcing a large taxdb download
+  while staying accurate for nt barcode deflines. The step is provisional by design — the user
+  reviews ranked hits and picks; we never auto-set the taxon.
+- **Alternatives considered:** (a) Local DB the user configures (UNITE) — faster/offline/
+  reproducible but needs DB setup; deferred. (b) Reuse the project's fetched ITS refs — not a
+  cold-start path (refs are fetched later). (c) Hybrid local-then-remote — more code; deferred.
+  (d) Resolve `staxids`→name via Entrez taxonomy — authoritative but adds an email-dependent
+  extra call; `stitle` chosen as dependency-free and sufficient for a reviewed suggestion.
+- **Status:** active. Implemented 2026-06-20; `taxon_id_utils.py` + 15 network-free tests
+  (`tests/test_taxon_id_utils.py`); live remote-BLAST verified. Full suite 200 passing.
