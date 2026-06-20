@@ -293,3 +293,38 @@ Format for each entry:
   `tests/test_ncbi_utils.py`), full suite **169 passing** (was 155). Synonym sets are
   curated defaults — open to per-locus adjustment by the user (mycology domain call).
   Addresses the RM-001 "complete cds" risk-register item.
+
+### D-012 (2026-06-20) — Workflow architecture: standalone component pages chained by a disk-backed project manifest
+- **Decision:** Reorganise the loci-extraction workflow into (a) standalone, single-purpose
+  **component pages** — *NCBI References*, *ITSx (rDNA)*, *Exonerate (coding / gene-fishing)*,
+  *Primers (in-silico PCR)* — each usable on its own, **plus** (b) a **Workflow / Strategy**
+  page that chains them in a logical, stepwise order for a chosen *strategy* (a named recipe,
+  e.g. "fungal barcodes" = ITSx for rDNA + BLAST→Exonerate for coding + type-material refs).
+  Shared state is a **disk-backed project manifest** (extending the existing
+  `metadata/project_manifest.json` + assembly registry), **not** `st.session_state`: it
+  records assemblies, per-assembly **taxonomy** (project-level default + per-assembly
+  override), selected loci, the chosen strategy, and per-step status/outputs. Every page
+  reads/writes the manifest, which becomes the single source of truth and the basis for
+  headless re-runs (RM-005). Taxonomy is set **manually (closest taxon)** or **picked from the
+  ITS-extraction BLAST result**. The rDNA-vs-coding split is retained (ITSx for rDNA;
+  BLAST→Exonerate for coding, D-008). The existing standalone "gene of interest" Exonerate
+  input is promoted to the first-class Exonerate page.
+- **Why:** The current monolithic page 2 couples reference fetching, four extraction
+  strategies, and combining behind one strategy radio, and chains them through
+  `st.session_state` — the exact fragility in the risk register ("pipeline state lives in
+  session_state, lost on reload"). The user wants components usable both standalone (e.g. fish
+  a gene out of one assembly with Exonerate) and chained into a repeatable phylogenetic
+  pipeline. A manifest-backed design gives both, makes runs transparent/traceable/repeatable
+  (the working-agreement mandate), and directly enables RM-005 headless runs. Most extraction
+  *logic* already lives in `src/` and is reused unchanged — this is largely a UI/orchestration
+  reorganisation, not a science rewrite. Chosen by the user (2026-06-20): "Component pages +
+  Workflow" layout and "Disk-backed project manifest" chaining.
+- **Alternatives considered:** (a) Hybrid "Extraction Tools" page (tools as tabs) + Workflow
+  page — rejected in favour of fully separate component pages. (b) Single stepwise wizard in
+  one page — rejected; doesn't give first-class standalone tools. (c) `st.session_state`
+  chaining persisted only on export — rejected as the known reload-fragility (RM-005).
+- **Status:** active (architecture). Implementation is phased via **RM-007** (PLANNING.md);
+  per the working agreement the phased plan is to be approved before coding, and the old
+  monolithic page is retained until the new pages reach parity. **Open sub-decision:**
+  reference library **global vs per-project** (global cache + per-project selection/provenance
+  is the leading option) — to be resolved as **D-013** before the References-page increment.

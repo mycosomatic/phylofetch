@@ -59,6 +59,41 @@ user's decisions in that session.
 - **RM-005 (2026-06-18) — Headless reproducibility.** A config-driven `phylofetch run
   project.yaml` over the existing functions, input-file hashing, and pinned tool versions in
   `environment.yml`, so the whole pipeline is re-runnable off the browser session.
+- **RM-006 (2026-06-20) — rDNA sequence-variant consensus from Illumina reads. _[FUTURE,
+  deferred by user]_** Extracting rDNA (ITS/LSU/SSU) from an *assembly* yields a single
+  collapsed copy that does not represent the intragenomic **sequence variants** of the
+  multi-copy rDNA tandem array (and the region may not assemble cleanly from short reads
+  alone, though hybrid assemblies often resolve it). Planned step: map **Illumina reads only**
+  to the rDNA region and emit a *single* consensus carrying **IUPAC ambiguity codes** at
+  variable sites — i.e. represent the variation rather than phasing out individual rDNA
+  variants, *unless* a meaningful phasing approach emerges. This introduces a **new input
+  type** (no fastq/mapping/variant-calling code exists today; the pipeline is currently
+  assembly-only). Intended as a QC / marker-reliability signal, **not** as multiple tree
+  tips. Terminology fixed to "sequence variants" (user preference). Not to be built now;
+  recorded per the user's "tuck into future plans" instruction (2026-06-20).
+- **RM-007 (2026-06-20) — Component-page + manifest-chained extraction workflow.**
+  Implements **D-012**. Phased so each increment ships behind tests and the old page keeps
+  working until parity:
+  1. **Manifest schema** — extend the project manifest + assembly registry with per-assembly
+     **taxonomy** (project default + override) and a **workflow/step state** block (selected
+     loci, chosen strategy, per-step status/outputs); add load/save/update helpers + tests.
+  2. **Assembly taxonomy UI** — set project-default taxon + per-assembly override in the
+     Assembly Manager; persist to the manifest.
+  3. **ITS→BLAST provisional-ID feeder** — extract ITS (ITSx) → BLAST → suggest closest taxon
+     → write back to the assembly's taxonomy (the "pick from ITS BLAST result" path).
+  4. **Component pages** — split the monolith into standalone *NCBI References*, *ITSx*,
+     *Exonerate*, *Primers* pages, each reading/writing the manifest but runnable ad-hoc.
+  5. **Workflow / Strategy page** — orchestrator with named strategies and a stepwise,
+     manifest-driven checklist that chains the component pages.
+  6. **Reference provenance into manifest** — depends on **D-013** (references global vs
+     per-project).
+  Old monolithic `pages/2_Loci_Extraction.py` retained/redirected until the new pages reach
+  feature parity (working-agreement caution on removing code).
+  - _(2026-06-20) Step 1 (manifest schema) **done**:_ project manifest v2 (`default_taxon` +
+    `workflow`/step-state block), per-assembly `taxon`/`taxon_source`, and the helper API
+    (`load_project_manifest`, `update_step`, `set_assembly_taxon`, `effective_taxon`, …) landed
+    in `project_manager.py` with 16 tests. Backward-compatible / read-tolerant. Next: step 2
+    (Assembly Manager taxonomy UI).
 
 ### Review findings — risk register (2026-06-18)
 

@@ -5,6 +5,21 @@
 
 ## 2026-06-20
 
+- **Workflow architecture — manifest schema (D-012 / RM-007 step 1).** First increment of the
+  component-page + manifest-chained workflow; pure data layer, no UI yet.
+  - `project_manager.py`: project manifest bumped to **schema v2** — adds a project-level
+    `default_taxon` and a `workflow` block (`strategy`, `loci`, and per-step `steps` carrying
+    `status`/`updated_at`/`outputs`/`notes` over `references`/`rDNA`/`coding`/`primers`/`combine`).
+    v1 manifests are read tolerantly (`_ensure_manifest_defaults` fills missing keys in memory;
+    a write upgrades the file and preserves any unknown/extra steps).
+  - Per-assembly **taxonomy**: `taxon` + `taxon_source` (`manual` | `its_blast`) on registry
+    records (backfilled on load/migrate), plus new `assembly_manifest.tsv` columns.
+  - New helpers: `load_project_manifest` / `save_project_manifest`, `set_default_taxon`,
+    `get_workflow`, `set_workflow_strategy`, `set_workflow_loci`, `update_step`,
+    `effective_taxon`, `set_assembly_taxon`. Verified read-tolerant against existing on-disk
+    projects (no files modified on load).
+  - Tests: 16 new in `tests/test_project_manager.py` (schema/upgrade, workflow-state helpers,
+    taxonomy). **185 passing** (was 169).
 - **Synonym OR-group NCBI search; dropped forced "complete cds" (D-011, addresses RM-001
   risk-register item).** Reference fetching returned ≈0 hits whenever `"complete cds"` was in
   the query, because fungal markers are deposited mostly as *partial-cds* barcode amplicons.

@@ -11,11 +11,23 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from phylofetch.project_manager import (
     ASSEMBLY_MANIFEST_FIELDS,
+    PROJECT_MANIFEST_SCHEMA_VERSION,
+    WORKFLOW_STEPS,
     _migrate_assembly_record,
+    effective_taxon,
+    get_workflow,
     init_project,
     list_projects,
     load_assembly_registry,
+    load_json,
+    load_project_manifest,
     save_assembly_registry,
+    save_json,
+    set_assembly_taxon,
+    set_default_taxon,
+    set_workflow_loci,
+    set_workflow_strategy,
+    update_step,
 )
 
 
@@ -93,10 +105,17 @@ class TestAssemblyRegistry:
 
 
 class TestMigrateAssemblyRecord:
-    def test_nested_record_passes_through_unchanged(self):
+    def test_nested_record_preserved_with_taxon_defaults(self):
+        # Canonical (nested-stats) records keep their content but now gain taxon defaults
+        # (D-012); the original dict is not mutated.
         rec = {"assembly_path": "/d/x.fasta", "stats": {"n50": 100}, "reads_r1": ""}
         result = _migrate_assembly_record("X", rec)
-        assert result is rec
+        assert result["stats"] == {"n50": 100}
+        assert result["assembly_path"] == "/d/x.fasta"
+        assert result["reads_r1"] == ""
+        assert result["taxon"] == "" and result["taxon_source"] == ""
+        assert result["strain_id"] == "X"
+        assert "taxon" not in rec          # caller's dict untouched
 
     def test_flat_record_gets_stats_nested(self):
         flat = {
@@ -139,6 +158,123 @@ class TestMigrateAssemblyRecord:
         assert isinstance(loaded["OldSample"]["stats"], dict)
         assert loaded["OldSample"]["stats"]["mean_gc"] == 51.0
         assert "gc_percent" not in loaded["OldSample"]["stats"]
+
+
+class TestProjectManifestSchema:
+    def test_init_project_writes_v2_manifest(self, tmp_path):
+        init_project(tmp_path / "p")
+        m = load_json(tmp_path / "p" / "metadata" / "project_manifest.json")
+        assert m["schema_version"] == PROJECT_MANIFEST_SCHEMA_VERSION
+        assert m["default_taxon"] == ""
+        assert set(m["workflow"]["steps"]) == set(WORKFLOW_STEPS)
+        assert m["workflow"]["strategy"] is None
+        assert m["workflow"]["loci"] == []
+        assert all(s["status"] == "pending" for s in m["workflow"]["steps"].values())
+
+    def test_load_fills_defaults_when_absent(self, tmp_path):
+        m = load_project_manifest(tmp_path / "ghost")   # no project on disk yet
+        assert m["default_taxon"] == ""
+        assert set(m["workflow"]["steps"]) == set(WORKFLOW_STEPS)
+
+    def test_load_upgrades_v1_manifest_without_data_loss(self, tmp_path):
+        meta = tmp_path / "old" / "metadata"
+        meta.mkdir(parents=True)
+        save_json(meta / "project_manifest.json", {
+            "name": "old", "created_at": "2026-01-01T00:00:00+00:00",
+            "schema_version": 1, "notes": "legacy",
+        })
+        m = load_project_manifest(tmp_path / "old")
+        assert m["name"] == "old"                                      # preserved
+        assert m["notes"] == "legacy"                                  # preserved
+        assert m["schema_version"] == PROJECT_MANIFEST_SCHEMA_VERSION  # upgraded
+        assert set(m["workflow"]["steps"]) == set(WORKFLOW_STEPS)      # added
+
+    def test_ensure_preserves_existing_values_and_extra_steps(self, tmp_path):
+        meta = tmp_path / "x" / "metadata"
+        meta.mkdir(parents=True)
+        save_json(meta / "project_manifest.json", {
+            "workflow": {"steps": {"references": {"status": "done"},
+                                   "custom_step": {"status": "running"}}},
+        })
+        m = load_project_manifest(tmp_path / "x")
+        assert m["workflow"]["steps"]["references"]["status"] == "done"  # value kept
+        assert "custom_step" in m["workflow"]["steps"]                   # extra kept
+        assert m["workflow"]["steps"]["coding"]["status"] == "pending"   # canonical added
+
+
+class TestWorkflowStateHelpers:
+    def test_set_default_taxon_strips(self, tmp_path):
+        set_default_taxon(tmp_path / "p", "  Alternaria ")
+        assert load_project_manifest(tmp_path / "p")["default_taxon"] == "Alternaria"
+
+    def test_set_strategy_and_loci(self, tmp_path):
+        set_workflow_strategy(tmp_path / "p", "fungal-barcodes")
+        set_workflow_loci(tmp_path / "p", ["ITS", "RPB2"])
+        wf = get_workflow(tmp_path / "p")
+        assert wf["strategy"] == "fungal-barcodes"
+        assert wf["loci"] == ["ITS", "RPB2"]
+
+    def test_clearing_strategy(self, tmp_path):
+        set_workflow_strategy(tmp_path / "p", "x")
+        set_workflow_strategy(tmp_path / "p", None)
+        assert get_workflow(tmp_path / "p")["strategy"] is None
+
+    def test_update_step_merges_outputs_and_stamps(self, tmp_path):
+        update_step(tmp_path / "p", "coding", status="running")
+        update_step(tmp_path / "p", "coding", outputs={"cds": "RPB2_CDS.fasta"})
+        update_step(tmp_path / "p", "coding", status="done",
+                    outputs={"protein": "RPB2_protein.fasta"}, notes="2 loci")
+        step = get_workflow(tmp_path / "p")["steps"]["coding"]
+        assert step["status"] == "done"
+        assert step["outputs"] == {"cds": "RPB2_CDS.fasta", "protein": "RPB2_protein.fasta"}
+        assert step["notes"] == "2 loci"
+        assert step["updated_at"]      # timestamp stamped
+
+    def test_update_step_rejects_unknown_step(self, tmp_path):
+        with pytest.raises(ValueError):
+            update_step(tmp_path / "p", "nonsense", status="done")
+
+    def test_update_step_rejects_bad_status(self, tmp_path):
+        with pytest.raises(ValueError):
+            update_step(tmp_path / "p", "coding", status="finished")
+
+
+class TestAssemblyTaxonomy:
+    def test_effective_taxon_prefers_override(self):
+        assert effective_taxon({"taxon": "Alternaria alternata"}, "Fungi") == "Alternaria alternata"
+        assert effective_taxon({"taxon": ""}, "Fungi") == "Fungi"
+        assert effective_taxon({}, "Fungi") == "Fungi"
+        assert effective_taxon({}, "") == ""
+
+    def test_set_assembly_taxon_persists_and_logs_tsv(self, tmp_path):
+        save_assembly_registry(tmp_path / "p", _REGISTRY)
+        set_assembly_taxon(tmp_path / "p", "S9-1B-A2", "Alternaria alternata", source="manual")
+        reg = load_assembly_registry(tmp_path / "p")
+        assert reg["S9-1B-A2"]["taxon"] == "Alternaria alternata"
+        assert reg["S9-1B-A2"]["taxon_source"] == "manual"
+        tsv = (tmp_path / "p" / "metadata" / "assembly_manifest.tsv").read_text()
+        assert "Alternaria alternata" in tsv
+
+    def test_its_blast_source_allowed(self, tmp_path):
+        save_assembly_registry(tmp_path / "p", _REGISTRY)
+        set_assembly_taxon(tmp_path / "p", "S9-1B-A2", "Alternaria sp.", source="its_blast")
+        assert load_assembly_registry(tmp_path / "p")["S9-1B-A2"]["taxon_source"] == "its_blast"
+
+    def test_unknown_strain_raises(self, tmp_path):
+        save_assembly_registry(tmp_path / "p", _REGISTRY)
+        with pytest.raises(KeyError):
+            set_assembly_taxon(tmp_path / "p", "NOPE", "X")
+
+    def test_bad_source_raises(self, tmp_path):
+        save_assembly_registry(tmp_path / "p", _REGISTRY)
+        with pytest.raises(ValueError):
+            set_assembly_taxon(tmp_path / "p", "S9-1B-A2", "X", source="guess")
+
+    def test_migrated_records_gain_taxon_fields(self, tmp_path):
+        save_assembly_registry(tmp_path / "p", _REGISTRY)
+        for rec in load_assembly_registry(tmp_path / "p").values():
+            assert rec.get("taxon") == ""
+            assert rec.get("taxon_source") == ""
 
 
 class TestListProjects:
