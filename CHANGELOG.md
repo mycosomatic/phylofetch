@@ -3,6 +3,29 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-20
+
+- **Synonym OR-group NCBI search; dropped forced "complete cds" (D-011, addresses RM-001
+  risk-register item).** Reference fetching returned ≈0 hits whenever `"complete cds"` was in
+  the query, because fungal markers are deposited mostly as *partial-cds* barcode amplicons.
+  - `ncbi_utils.py`: removed the hardcoded `"complete cds"` from every coding-locus
+    `LOCUS_CATALOGUE` entry; each coding locus now carries a canonical `gene` keyword plus a
+    curated `synonyms` list (TEF1/RPB1/RPB2/TUB2/GAPDH/CAL/ACT/HIS3 + rDNA variants). New
+    `build_entrez_query(terms, organism, field)` ORs the terms within the field, phrase-quotes
+    multi-word terms, dedupes case-insensitively, and ANDs the organism. `search_ncbi_nucleotide`
+    / `search_ncbi_protein` now accept a `str` **or** `list[str]`; new `locus_search_terms`
+    helper assembles `[user keyword] + gene + synonyms`. Notes corrected ("Use CDS-only refs"
+    removed).
+  - `pages/2_Loci_Extraction.py`: per-locus **"Also search N known synonym(s)"** checkbox
+    (default on), the **resolved Entrez query shown verbatim** under the search box, fetch
+    provenance now stores that resolved query, and the misleading "search 'complete cds' /
+    avoid PCR amplicons / best with CDS-only references" captions corrected globally
+    (partial-CDS amplicons are fine; Exonerate resolves introns; relaxed BLAST expects
+    amplicons).
+  - Tests: `tests/test_ncbi_utils.py` — `TestBuildEntrezQuery`, `TestLocusSearchTerms`,
+    `TestCatalogueIsBarcodeFriendly` (regression-guards that no catalogue term forces
+    'complete cds' and every coding locus has synonyms). **169 passing** (was 155).
+
 ## 2026-06-19
 
 - **Degenerate-primer handling for in-silico PCR (D-009) + Matheny RPB1/RPB2 primers

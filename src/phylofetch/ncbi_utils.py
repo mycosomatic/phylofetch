@@ -340,18 +340,60 @@ def _search_ncbi(db: str, base_query: str, max_results: int,
     return results
 
 
-def search_ncbi_protein(gene_name: str, organism: str,
+def build_entrez_query(terms, organism: str = "", field: str = "Title") -> str:
+    """
+    Build an Entrez query that ORs a set of synonym ``terms`` within ``field`` and ANDs
+    the organism. ``terms`` may be a single ``str`` or an iterable of ``str``.
+
+    Multi-word terms are wrapped in quotes so NCBI matches them as a phrase; without quotes
+    the field tag binds only to the *last* word and the earlier words silently fall back to
+    All Fields (one of the ways the old single-string query under-/over-matched). A single
+    term skips the surrounding parentheses. Terms are de-duplicated case-insensitively,
+    order-preserving.
+
+        build_entrez_query(["gapdh", "glyceraldehyde-3-phosphate dehydrogenase"], "Fungi")
+        -> '(gapdh[Title] OR "glyceraldehyde-3-phosphate dehydrogenase"[Title]) AND Fungi[Organism]'
+
+    Intentionally carries NO 'complete cds' / 'partial cds' constraint: fungal phylogenetic
+    markers are overwhelmingly deposited as *partial cds* barcode amplicons, so forcing
+    'complete cds' silently crushed recall. The relaxed BLAST path and Exonerate both handle
+    partial / intron-containing references. See DECISIONS.md D-011.
+    """
+    if isinstance(terms, str):
+        terms = [terms]
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in terms:
+        t = (t or "").strip()
+        key = t.lower()
+        if t and key not in seen:
+            seen.add(key)
+            uniq.append(t)
+    if not uniq:
+        raise ValueError("build_entrez_query: no non-empty search terms given")
+
+    def fmt(t: str) -> str:
+        return f'"{t}"[{field}]' if " " in t else f"{t}[{field}]"
+
+    joined = " OR ".join(fmt(t) for t in uniq)
+    if len(uniq) > 1:
+        joined = f"({joined})"
+    org = (organism or "").strip()
+    return f"{joined} AND {org}[Organism]" if org else joined
+
+
+def search_ncbi_protein(gene_name, organism: str,
                         max_results: int = 20, type_mode: str = "all") -> list[dict]:
     return _search_ncbi(
-        "protein", f"{gene_name}[Gene Name] AND {organism}[Organism]",
+        "protein", build_entrez_query(gene_name, organism, field="Gene Name"),
         max_results, type_mode,
     )
 
 
-def search_ncbi_nucleotide(gene_name: str, organism: str,
+def search_ncbi_nucleotide(gene_name, organism: str,
                            max_results: int = 20, type_mode: str = "all") -> list[dict]:
     return _search_ncbi(
-        "nucleotide", f"{gene_name}[Title] AND {organism}[Organism]",
+        "nucleotide", build_entrez_query(gene_name, organism, field="Title"),
         max_results, type_mode,
     )
 
@@ -431,34 +473,67 @@ def delete_from_library(locus_name: str, accession: str) -> bool:
 
 # ── Locus catalogue ───────────────────────────────────────────────────────────
 # Standard fungal phylogenetic markers with practical NCBI search terms.
-# Protein-coding loci default to nucleotide (CDS) so blastn HSP-as-exon
-# extraction works naturally. Users can switch to protein for tblastn.
 #
-# This catalogue is genus-agnostic. Set organism in the UI per locus.
+# Each coding locus carries a canonical `gene` keyword plus `synonyms`: the curated set
+# of name variants this marker is deposited under (symbol + spelled-out name + common
+# abbreviations). `search_ncbi_nucleotide` / `_protein` OR these together (build_entrez_query)
+# so inconsistently-titled records are still recovered. NO entry forces 'complete cds' —
+# fungal markers are mostly *partial cds* barcode amplicons (D-011, supersedes the old
+# 'complete cds' terms). Set organism in the UI per locus. This catalogue is genus-agnostic.
 
 LOCUS_CATALOGUE: dict[str, dict] = {
     # rDNA — ITSx extracts from assemblies; fetch here for outgroup references
     "ITS":   {"db": "nucleotide", "gene": "internal transcribed spacer",
+               "synonyms": ["ITS1", "ITS2", "5.8S ribosomal RNA"],
                "note": "ITSx extracts from assemblies; fetch here for outgroup taxa"},
     "LSU":   {"db": "nucleotide", "gene": "28S large subunit ribosomal RNA",
+               "synonyms": ["28S ribosomal RNA", "LSU rRNA", "large subunit ribosomal RNA"],
                "note": "ITSx extracts from assemblies; fetch here for outgroup taxa"},
     "SSU":   {"db": "nucleotide", "gene": "18S small subunit ribosomal RNA",
+               "synonyms": ["18S ribosomal RNA", "SSU rRNA", "small subunit ribosomal RNA"],
                "note": "ITSx extracts from assemblies; fetch here for outgroup taxa"},
-    # Protein-coding — use CDS for blastn extraction
-    "TEF1":  {"db": "nucleotide", "gene": "tef1 complete cds",
-               "note": "Translation elongation factor 1-alpha. Use CDS-only refs."},
-    "RPB1":  {"db": "nucleotide", "gene": "rpb1 complete cds",
-               "note": "RNA pol II largest subunit. Use CDS-only refs."},
-    "RPB2":  {"db": "nucleotide", "gene": "rpb2 complete cds",
-               "note": "RNA pol II second largest subunit. Use CDS-only refs."},
-    "TUB2":  {"db": "nucleotide", "gene": "tub2 complete cds",
+    # Protein-coding — partial-CDS barcode amplicons are the norm and work fine here.
+    "TEF1":  {"db": "nucleotide", "gene": "tef1",
+               "synonyms": ["tef-1", "tef1-alpha", "translation elongation factor 1-alpha",
+                            "elongation factor 1-alpha", "EF-1alpha"],
+               "note": "Translation elongation factor 1-alpha."},
+    "RPB1":  {"db": "nucleotide", "gene": "rpb1",
+               "synonyms": ["RNA polymerase II largest subunit",
+                            "DNA-directed RNA polymerase II subunit RPB1"],
+               "note": "RNA pol II largest subunit."},
+    "RPB2":  {"db": "nucleotide", "gene": "rpb2",
+               "synonyms": ["RNA polymerase II second largest subunit",
+                            "DNA-directed RNA polymerase II subunit RPB2"],
+               "note": "RNA pol II second largest subunit."},
+    "TUB2":  {"db": "nucleotide", "gene": "tub2",
+               "synonyms": ["benA", "beta-tubulin", "beta tubulin", "btub"],
                "note": "Beta-tubulin. Has small exons — try 'blastn' task if exons are missed."},
-    "GAPDH": {"db": "nucleotide", "gene": "gapdh complete cds",
-               "note": "Glyceraldehyde-3-phosphate dehydrogenase. Use CDS-only refs."},
-    "CAL":   {"db": "nucleotide", "gene": "calmodulin complete cds",
-               "note": "Calmodulin. Use CDS-only refs."},
-    "ACT":   {"db": "nucleotide", "gene": "actin complete cds",
-               "note": "Actin. Use CDS-only refs."},
-    "HIS3":  {"db": "nucleotide", "gene": "histone h3 complete cds",
+    "GAPDH": {"db": "nucleotide", "gene": "gapdh",
+               "synonyms": ["gpd", "gpdh", "gpdA", "glyceraldehyde-3-phosphate dehydrogenase"],
+               "note": "Glyceraldehyde-3-phosphate dehydrogenase."},
+    "CAL":   {"db": "nucleotide", "gene": "calmodulin",
+               "synonyms": ["cmd", "cmdA", "CaM"],
+               "note": "Calmodulin."},
+    "ACT":   {"db": "nucleotide", "gene": "actin",
+               "synonyms": ["act1", "actA"],
+               "note": "Actin."},
+    "HIS3":  {"db": "nucleotide", "gene": "histone H3",
+               "synonyms": ["his3", "hH3"],
                "note": "Histone H3. Useful for fine-scale resolution in some groups."},
 }
+
+
+def locus_search_terms(locus_name: str, user_term: str = "") -> list[str]:
+    """
+    Ordered search terms for a locus: the user's typed keyword first (if any), then the
+    catalogue canonical `gene` and curated `synonyms`. De-duplication is left to
+    ``build_entrez_query``. Safe for unknown/custom loci (returns ``[user_term]`` or ``[]``).
+    """
+    cat = LOCUS_CATALOGUE.get(locus_name, {})
+    terms: list[str] = []
+    if user_term and user_term.strip():
+        terms.append(user_term.strip())
+    if cat.get("gene"):
+        terms.append(cat["gene"])
+    terms.extend(cat.get("synonyms", []))
+    return terms

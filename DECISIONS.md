@@ -239,3 +239,57 @@ Format for each entry:
 - **Status:** active. Catalogue now 16 built-in pairs; sequences regression-tested
   (`TestMathenyRPBPairs`). Candidate tie-break order (smallest-first) left unchanged pending
   user confirmation — see open question in the session note.
+
+### D-011 (2026-06-20) — Synonym OR-group NCBI search; drop forced "complete cds"
+- **Decision:** Rebuild the reference-search query for coding loci. (1) **Remove the
+  hardcoded `"complete cds"`** from every `LOCUS_CATALOGUE` coding entry (was
+  `"gapdh complete cds"`, `"tef1 complete cds"`, …). (2) Give each coding locus a canonical
+  `gene` keyword plus a curated `synonyms` list (symbol + spelled-out name + common
+  abbreviations), and add a query builder `build_entrez_query(terms, organism, field)` that
+  ORs the terms within the field, phrase-quotes multi-word terms, de-duplicates
+  case-insensitively, and ANDs `organism[Organism]`. `search_ncbi_nucleotide` /
+  `search_ncbi_protein` now accept a `str` **or** a `list[str]` and route through the
+  builder; a `locus_search_terms(locus, user_term)` helper assembles `[user keyword] + gene
+  + synonyms`. (3) In the UI: a per-locus **"Also search N known synonym(s)"** checkbox
+  (default on), the **resolved Entrez query shown verbatim** under the search box
+  (transparency), the stored fetch-provenance `query` now records that resolved query, and
+  the misleading captions/notes ("Search for 'complete cds' entries / Avoid PCR amplicons /
+  Use CDS-only refs / Best with CDS-only references") are corrected globally to: partial-CDS
+  barcode amplicons are the norm for fungal markers and work fine; complete-CDS refs are
+  optional. The per-locus search field stays editable, so the user can still hand-type
+  `complete cds` if they ever want it. Synonym sets used (title field): TEF1 = tef1 / tef-1 /
+  tef1-alpha / translation elongation factor 1-alpha / elongation factor 1-alpha / EF-1alpha;
+  RPB1 = rpb1 / RNA polymerase II largest subunit / DNA-directed RNA polymerase II subunit
+  RPB1; RPB2 = rpb2 / RNA polymerase II second largest subunit / …RPB2; TUB2 = tub2 / benA /
+  beta-tubulin / beta tubulin / btub; GAPDH = gapdh / gpd / gpdh / gpdA /
+  glyceraldehyde-3-phosphate dehydrogenase; CAL = calmodulin / cmd / cmdA / CaM; ACT = actin
+  / act1 / actA; HIS3 = histone H3 / his3 / hH3; plus rDNA variants for ITS/LSU/SSU.
+- **Why:** Empirically the user got ≈0 hits whenever `"complete cds"` was in the query.
+  Fungal phylogenetic markers are deposited overwhelmingly as **partial-cds barcode
+  amplicons** ("…gene, partial cds"), so forcing `complete cds` excludes exactly the records
+  wanted for closely-related-taxon phylogenetics — the recall-crushing fragility already in
+  the PLANNING.md risk register (RM-001: "`{gene}[Title]` search biases toward 'complete cds'
+  titles, misses inconsistently-titled barcode records"). The original rationale for clean
+  complete-CDS refs (so naïve blastn HSP-as-exon stitching wouldn't trip over introns) is
+  largely obsolete after **D-008**: Exonerate resolves introns/splice sites, and the relaxed
+  BLAST path *expects* genomic amplicons (`require_complete_cds=False`). The catalogue/caption
+  guidance ("Use CDS-only refs", "Avoid PCR amplicons") was also **self-contradictory** with
+  the relaxed-amplicon strategy the user had selected. Synonym OR-groups fix the second half
+  of the fragility (gene-name inconsistency: gpd vs gpdh vs the spelled-out name), and
+  showing the resolved query keeps the change transparent/traceable per the working
+  agreement.
+- **Alternatives considered:** (a) **Just drop "complete cds"** (single-keyword query) —
+  rejected by the user as not robust to name variation. (b) **Synonyms + keep "complete cds"
+  as an opt-in toggle** — declined; the editable keyword box already lets a user re-add it,
+  so a dedicated toggle was unnecessary UI. (c) **Strategy-aware Reference-Library guidance**
+  (different advice per extraction strategy) — the user chose to fix the wording globally
+  instead, simpler and avoids coupling the library tab to the strategy radio. (d) Use
+  `[Gene]`/`[All Fields]` instead of `[Title]` for nucleotide — deferred; `[Title]` with
+  phrase-quoted synonyms is predictable and high-recall, and `[All Fields]` adds noise.
+  (e) Auto-trust no completeness filter at all even for Exonerate clean queries — acceptable
+  because a partial CDS still works as an Exonerate/BLAST query.
+- **Status:** active. Implemented 2026-06-20; 14 new network-free tests
+  (`TestBuildEntrezQuery`, `TestLocusSearchTerms`, `TestCatalogueIsBarcodeFriendly` in
+  `tests/test_ncbi_utils.py`), full suite **169 passing** (was 155). Synonym sets are
+  curated defaults — open to per-locus adjustment by the user (mycology domain call).
+  Addresses the RM-001 "complete cds" risk-register item.

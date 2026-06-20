@@ -17,9 +17,12 @@ from Bio.SeqFeature import SeqFeature
 from Bio.SeqRecord import SeqRecord
 
 from phylofetch.ncbi_utils import (
+    LOCUS_CATALOGUE,
     RefRecord,
     _mark_type_set,
+    build_entrez_query,
     load_ref_meta,
+    locus_search_terms,
     normalize_type_kind,
     parse_source_metadata,
     save_ref_meta,
@@ -100,6 +103,82 @@ class TestMarkTypeSet:
         results = [{"uid": "1"}, {"uid": "2"}, {"uid": "3"}]
         out = _mark_type_set(results, {"2"})
         assert [r["is_type"] for r in out] == [False, True, False]
+
+
+# ── Entrez query construction (D-011) ─────────────────────────────────────────
+
+class TestBuildEntrezQuery:
+    def test_single_term_with_organism(self):
+        assert build_entrez_query("gapdh", "Fungi") == "gapdh[Title] AND Fungi[Organism]"
+
+    def test_single_term_no_organism(self):
+        assert build_entrez_query("gapdh", "") == "gapdh[Title]"
+        assert build_entrez_query("gapdh", "   ") == "gapdh[Title]"
+
+    def test_multiword_term_is_phrase_quoted(self):
+        # the field tag must bind to the whole phrase, not just the last word
+        q = build_entrez_query("glyceraldehyde-3-phosphate dehydrogenase", "Fungi")
+        assert q == '"glyceraldehyde-3-phosphate dehydrogenase"[Title] AND Fungi[Organism]'
+
+    def test_synonym_or_group_parenthesised(self):
+        q = build_entrez_query(
+            ["gapdh", "gpd", "glyceraldehyde-3-phosphate dehydrogenase"], "Aspergillus")
+        assert q == ('(gapdh[Title] OR gpd[Title] OR '
+                     '"glyceraldehyde-3-phosphate dehydrogenase"[Title]) '
+                     'AND Aspergillus[Organism]')
+
+    def test_case_insensitive_dedupe_preserves_order(self):
+        q = build_entrez_query(["GAPDH", "gapdh", "gpd", "GPD"], "")
+        assert q == "(GAPDH[Title] OR gpd[Title])"
+
+    def test_blank_terms_dropped(self):
+        assert build_entrez_query(["", "  ", "rpb2"], "Fungi") == "rpb2[Title] AND Fungi[Organism]"
+
+    def test_no_terms_raises(self):
+        with pytest.raises(ValueError):
+            build_entrez_query(["", "   "], "Fungi")
+
+    def test_protein_field(self):
+        assert build_entrez_query("rpb2", "Fungi", field="Gene Name") == \
+            "rpb2[Gene Name] AND Fungi[Organism]"
+
+    def test_no_complete_cds_constraint_injected(self):
+        # the whole point of D-011: the builder never adds a completeness filter
+        q = build_entrez_query(["tef1", "tef-1"], "Fungi")
+        assert "complete cds" not in q.lower()
+
+
+class TestLocusSearchTerms:
+    def test_user_term_first_then_catalogue(self):
+        terms = locus_search_terms("GAPDH", user_term="gpdA")
+        assert terms[0] == "gpdA"
+        assert "gapdh" in terms              # canonical gene
+        assert "glyceraldehyde-3-phosphate dehydrogenase" in terms  # a synonym
+
+    def test_no_user_term_uses_catalogue_only(self):
+        terms = locus_search_terms("RPB2")
+        assert terms[0] == "rpb2"
+        assert "RNA polymerase II second largest subunit" in terms
+
+    def test_unknown_locus_returns_user_term_only(self):
+        assert locus_search_terms("ZZZ", user_term="foo") == ["foo"]
+        assert locus_search_terms("ZZZ") == []
+
+
+class TestCatalogueIsBarcodeFriendly:
+    """Regression guards for D-011: no forced completeness; coding loci carry synonyms."""
+
+    CODING = [k for k in LOCUS_CATALOGUE if k not in ("ITS", "LSU", "SSU")]
+
+    def test_no_complete_cds_anywhere(self):
+        for name, cat in LOCUS_CATALOGUE.items():
+            blob = " ".join([cat.get("gene", ""), *cat.get("synonyms", []),
+                             cat.get("note", "")]).lower()
+            assert "complete cds" not in blob, f"{name} still forces 'complete cds'"
+
+    def test_coding_loci_have_synonyms(self):
+        for name in self.CODING:
+            assert LOCUS_CATALOGUE[name].get("synonyms"), f"{name} has no synonyms"
 
 
 # ── sidecar round-trip ────────────────────────────────────────────────────────

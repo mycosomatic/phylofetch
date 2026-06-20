@@ -77,6 +77,12 @@ Recorded so we don't lose them; each maps to a roadmap item above.
   → RM-005.
 - **(reference quality) `{gene}[Title]` NCBI search is fragile** — biases toward "complete
   cds" titles, misses inconsistently-titled barcode records. → RM-001.
+  - _(2026-06-20) — addressed by **D-011**:_ dropped the forced `"complete cds"` from the
+    coding-locus catalogue, added curated per-locus **synonym OR-groups** + a phrase-quoting
+    query builder (`build_entrez_query`), surfaced the resolved Entrez query in the UI, and
+    corrected the self-contradictory "use CDS-only / avoid amplicons" guidance (partial-CDS
+    barcode amplicons are the norm and work fine — Exonerate resolves introns, relaxed BLAST
+    expects amplicons). Recall of partial-cds barcodes and synonym-titled records restored.
 - **(method) Nucleotide BUSCO default saturates at depth;** consider amino-acid / codon-aware
   for deeper comparisons. Concatenation-only ignores ILS (high near speciation). → RM-004.
 - **(coverage) No tests for `concat.py`, `busco_utils.py`, `ncbi_utils.py`** — the
