@@ -414,3 +414,20 @@ Format for each entry:
   never crashes if the page registry is unavailable (e.g. headless AppTest bare mode).
 - **Status:** active. **RM-007 complete.** CLAUDE.md repository-layout + extraction-strategy
   sections updated. All 10 pages render-verified (AppTest); full suite 210 passing.
+
+### LXD-003 (2026-06-20) — ITSx fails on genome assemblies (hmmscan 100 kb limit)
+- **Fix:** `run_itsx` now **chunks contigs > 90 kb into overlapping 20 kb-overlap windows**
+  before ITSx (`chunk_long_contigs`), de-duplicates identical output regions (overlap dups),
+  and surfaces the hmmscan over-limit signature as a real error (rc=1) instead of a silent
+  empty result. Contigs ≤ limit pass through unchanged.
+- **Why:** ITSx runs HMMER `hmmscan`, which aborts on any target sequence > 100 kb
+  ("Target sequence length > 100K, over comparison pipeline limit"). Genome-assembly contigs
+  are routinely Mb-scale, so ITSx **aborted and returned no rDNA** (exit 0 + empty → read as
+  "no regions detected"). This affected the old monolith too — a pre-existing limitation, not a
+  decomposition regression. Chunking with overlap ≫ the rDNA cistron (≈5–9 kb; ITS < 1 kb)
+  keeps every rDNA region fully intact in at least one chunk; dedup removes the overlap
+  duplicates. Verified on a real assembly (NS26-3-C2): now yields ITS_full 481 bp + ITS1/ITS2/
+  SSU/LSU in ~74 s. Found because the user reported ITSx retrieving nothing while primer scan
+  found ITS (blastn has no length limit).
+- **Status:** active. `chunk_long_contigs` + 4 tests (`TestChunkLongContigs`); full suite 214.
+  Benefits the ITSx component page automatically (it calls `run_itsx`).

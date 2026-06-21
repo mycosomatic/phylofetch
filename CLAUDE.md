@@ -110,6 +110,12 @@ pytest tests/ -v --cov=phylofetch --cov-report=term-missing
 - `select_best_locus_group()` groups by `qseqid` first, picks highest-bitscore reference
 - Returns `(hsps, ref_accession)` tuple (not just list)
 
+### LXD-003 — ITSx on genome assemblies (itsx_utils.py)
+- HMMER `hmmscan` aborts on sequences > 100 kb; genome contigs are Mb-scale, so ITSx returned
+  no rDNA (exit 0 + empty). `run_itsx` now `chunk_long_contigs()` (> 90 kb → overlapping 20 kb
+  windows) before ITSx, de-dupes identical output regions, and returns rc=1 on the over-limit
+  signature. Overlap ≫ rDNA cistron, so no region is split. (2026-06-20)
+
 ## Extraction strategies (now component pages, D-012/RM-007)
 
 As of 2026-06-20 the single "Run Extraction tab" was decomposed into standalone **component

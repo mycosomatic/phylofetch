@@ -30,6 +30,45 @@ ITSX_SUFFIXES: dict[str, str] = {
     "LSU":      ".LSU.fasta",
 }
 
+# ITSx runs HMMER's hmmscan, which aborts on any target sequence > 100 kb
+# ("Target sequence length > 100K, over comparison pipeline limit"). Genome-assembly contigs
+# are routinely Mb-scale, so ITSx fails outright on assemblies. We chunk long contigs into
+# overlapping windows before ITSx: the rDNA cistron (≈5–9 kb; ITS proper < 1 kb) is far smaller
+# than the overlap, so every rDNA region stays fully intact in at least one chunk; duplicates
+# from the overlap are removed by de-duplicating identical output sequences. (LXD-003)
+ITSX_MAX_CONTIG_LEN = 90_000      # safely under hmmscan's 100 kb limit
+ITSX_CHUNK_OVERLAP = 20_000       # ≫ longest rDNA subunit, so no rDNA region is split
+
+
+def chunk_long_contigs(records, max_len: int = ITSX_MAX_CONTIG_LEN,
+                       overlap: int = ITSX_CHUNK_OVERLAP):
+    """
+    Split any contig longer than ``max_len`` into overlapping windows so ITSx/hmmscan can run.
+    Contigs ≤ max_len pass through unchanged. Chunk ids are ``<contig>__c<start>`` (the offset
+    is preserved for provenance). Returns ``(records_out, was_chunked)``.
+    """
+    out = []
+    changed = False
+    step = max(max_len - overlap, 1)
+    for rec in records:
+        n = len(rec.seq)
+        if n <= max_len:
+            out.append(rec)
+            continue
+        changed = True
+        start = 0
+        while start < n:
+            end = min(start + max_len, n)
+            sub = rec[start:end]
+            sub.id = f"{rec.id}__c{start}"
+            sub.name = sub.id
+            sub.description = ""
+            out.append(sub)
+            if end >= n:
+                break
+            start += step
+    return out, changed
+
 
 def _probe_itsx_version(itsx_bin: str) -> str:
     try:
@@ -60,11 +99,25 @@ def _relabel_itsx_output(fasta_path: str, strain_id: str,
     if not records:
         return False
 
+    # De-duplicate identical sequences: overlapping chunks (from chunk_long_contigs) can
+    # report the same rDNA region more than once. Keep the first occurrence, preserve order.
+    seen_seq: set[str] = set()
+    deduped = []
+    for rec in records:
+        key = str(rec.seq).upper()
+        if key in seen_seq:
+            continue
+        seen_seq.add(key)
+        deduped.append(rec)
+    records = deduped
+
     ts = _now_utc()
     for i, rec in enumerate(records):
         # Try to extract contig and coordinate info from ITSx header
         # ITSx format: >CONTIG|START-END|...
         contig = rec.id.split("|")[0] if "|" in rec.id else rec.id
+        if "__c" in contig:                       # strip chunk suffix -> original contig name
+            contig = contig.rsplit("__c", 1)[0]
         coords = ""
         if "|" in rec.description:
             parts = rec.description.split("|")
@@ -118,9 +171,18 @@ def run_itsx(
 
     itsx_version = _probe_itsx_version(itsx_bin)
 
+    # Chunk long contigs so ITSx/hmmscan's 100 kb target limit isn't hit on genome
+    # assemblies (LXD-003). Contigs ≤ limit pass through unchanged.
+    records = list(SeqIO.parse(assembly_fasta, "fasta"))
+    chunked, was_chunked = chunk_long_contigs(records)
+    itsx_input = assembly_fasta
+    if was_chunked:
+        itsx_input = prefix + "_itsx_input.fasta"
+        SeqIO.write(chunked, itsx_input, "fasta")
+
     cmd = [
         itsx_bin,
-        "-i", assembly_fasta,
+        "-i", itsx_input,
         "-o", prefix,
         "--cpu", str(threads),
         "--save_regions", "all",
@@ -136,6 +198,12 @@ def run_itsx(
     # Always surface the last 40 lines so UI can show them on failure or success
     log_lines = all_output.strip().splitlines()
     log_text  = "\n".join(log_lines[-40:]) if log_lines else "(no output)"
+
+    # ITSx exits 0 even when HMMER aborts on an over-limit sequence — surface it as an error
+    # so the caller doesn't read a silent empty result as "no rDNA detected".
+    if "over comparison pipeline limit" in all_output or "HMMER run seems to have been" in all_output:
+        return 1, ("ERROR: hmmscan hit its 100 kb sequence limit (a contig was too long even "
+                   "after chunking).\n" + log_text), {}
 
     found: dict[str, str] = {}
     for locus, suffix in ITSX_SUFFIXES.items():

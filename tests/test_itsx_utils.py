@@ -14,13 +14,55 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
 from phylofetch.itsx_utils import (
     ITSX_SUFFIXES,
     _probe_itsx_version,
+    chunk_long_contigs,
     combine_rdna_regions,
     place_rdna_regions,
     run_itsx,
 )
+
+
+class TestChunkLongContigs:
+    """LXD-003: contigs > hmmscan's 100 kb limit are split into overlapping windows."""
+
+    def _rec(self, rid, n):
+        return SeqRecord(Seq("A" * n), id=rid, description="")
+
+    def test_short_contig_passthrough(self):
+        out, changed = chunk_long_contigs([self._rec("c1", 1000)])
+        assert changed is False
+        assert len(out) == 1 and out[0].id == "c1"
+
+    def test_long_contig_split_with_overlap(self):
+        out, changed = chunk_long_contigs([self._rec("big", 250_000)],
+                                          max_len=90_000, overlap=20_000)
+        assert changed is True
+        assert all(len(r.seq) <= 90_000 for r in out)          # under hmmscan limit
+        starts = [int(r.id.split("__c")[1]) for r in out]
+        assert starts == [0, 70_000, 140_000, 210_000]         # step = max_len - overlap
+        assert out[-1].id == "big__c210000"
+        assert len(out[-1].seq) == 250_000 - 210_000            # last chunk reaches the end
+
+    def test_overlap_keeps_small_features_intact(self):
+        # any feature shorter than the overlap is fully contained in at least one chunk
+        out, _ = chunk_long_contigs([self._rec("c", 200_000)], max_len=90_000, overlap=20_000)
+        # consecutive chunks overlap by exactly `overlap`
+        spans = [(int(r.id.split("__c")[1]),
+                  int(r.id.split("__c")[1]) + len(r.seq)) for r in out]
+        for (s0, e0), (s1, e1) in zip(spans, spans[1:]):
+            assert e0 - s1 >= 20_000
+
+    def test_mixed_short_and_long(self):
+        out, changed = chunk_long_contigs([self._rec("s", 100), self._rec("L", 120_000)],
+                                          max_len=90_000, overlap=20_000)
+        assert changed is True
+        ids = [r.id for r in out]
+        assert "s" in ids and any(i.startswith("L__c") for i in ids)
 
 # run_itsx signature: (assembly_fasta, output_dir, strain_id, threads=4,
 #                      itsx_bin="ITSx", kingdom="fungi")

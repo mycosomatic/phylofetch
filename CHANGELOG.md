@@ -5,6 +5,13 @@
 
 ## 2026-06-20
 
+- **Bug fix — ITSx failed on genome assemblies (LXD-003).** ITSx runs HMMER `hmmscan`, which
+  aborts on any sequence > 100 kb; genome contigs are Mb-scale, so ITSx silently returned no
+  rDNA (exit 0 + empty). `itsx_utils.run_itsx` now chunks contigs > 90 kb into overlapping
+  (20 kb) windows via new `chunk_long_contigs`, de-dupes identical output regions, and reports
+  the hmmscan over-limit error as rc=1 instead of an empty result. Verified on a real assembly
+  (ITS_full 481 bp + ITS1/ITS2/SSU/LSU recovered). Affected the retired monolith too
+  (pre-existing). Tests: `TestChunkLongContigs` (+4) → **214 passing**.
 - **Decomposition complete — Workflow orchestrator + monolith retired (D-016 / RM-007 step 5).**
   - New `pages/6_Workflow.py`: a named-strategy selector ("Fungal barcodes (ITSx + Exonerate)",
     "Primers only", "Everything") over a **manifest-driven checklist** that shows each step's live
