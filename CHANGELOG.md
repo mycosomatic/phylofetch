@@ -5,6 +5,14 @@
 
 ## 2026-06-20
 
+- **Primers (in-silico PCR) component page (RM-007 step 4e).** New standalone
+  `pages/2_Primers.py`: assign primer pairs (citable catalogue / saved library / custom inline)
+  to loci, define custom loci for markers not in the catalogue, optionally **preview &
+  disambiguate** binding sites, then extract amplicons via `run_primer_extraction` (IUPAC
+  degenerate handling, D-009). Per-project outputs + combined `<locus>_amplicon_combined.fasta`;
+  provenance to `workflow.steps.primers`. Reuses the tested `primer_utils` (no new src logic).
+  **210 tests** pass; render verified headless (AppTest: assemblies, 11 primer-loci options,
+  run button). **Completes the four extraction component pages (4b–4e).**
 - **Exonerate (coding loci) component page (RM-007 step 4d).** New standalone
   `pages/2_Exonerate.py`: assemblies × coding loci (from the per-project reference library)
   and/or an ad-hoc **gene of interest** → BLAST-narrow + Exonerate frame-safe CDS (D-008), with

@@ -125,6 +125,13 @@ user's decisions in that session.
     per-project outputs + combined products; provenance to `workflow.steps.coding`. Reuses tested
     extraction functions (no new src logic); render verified headless. Next: step 4e (Primers
     component page), then step 5 (Workflow orchestrator), then retire monolith + finalize numbering.
+  - _(2026-06-20) Step 4e (Primers in-silico PCR component page) **done**:_ new standalone
+    `pages/2_Primers.py` — primer assignment (catalogue/library/custom) + custom loci + binding-site
+    preview/disambiguation → amplicon extraction (D-009 degenerate handling); per-project outputs +
+    combined; provenance to `workflow.steps.primers`. Reuses tested `primer_utils`; render verified.
+    **All four extraction component pages (4b–4e) are now done.** Next: step 5 (Workflow
+    orchestrator — named strategies + manifest-driven checklist), then retire the monolithic
+    `pages/2_Loci_Extraction.py` and finalize page numbering.
 
 ### Review findings — risk register (2026-06-18)
 
