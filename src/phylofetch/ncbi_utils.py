@@ -409,6 +409,24 @@ def search_ncbi_nucleotide(gene_name, organism: str,
     )
 
 
+def ncbi_search_count(gene_name, organism: str, db: str = "nucleotide",
+                      field: str = "Title", type_mode: str = "all") -> int:
+    """
+    Total number of NCBI matches for a (synonym) query, without fetching the IDs — a cheap
+    esearch with ``retmax=0`` returning the ``Count``. Used by the References page to preview
+    how many references each locus would yield before fetching. ``type_mode="type_only"``
+    counts only sequence-from-type records; "prefer"/"all" return the full count.
+    """
+    _require_email()
+    query = build_entrez_query(gene_name, organism, field=field)
+    if type_mode == "type_only":
+        query = f"{query} AND {_TYPE_FILTER}"
+    handle = Entrez.esearch(db=db, term=query, retmax=0)
+    record = Entrez.read(handle)
+    handle.close()
+    return int(record.get("Count", 0))
+
+
 # ── NCBI fetch ───────────────────────────────────────────────────────────────
 
 def fetch_protein_by_accession(accession: str) -> Optional[SeqRecord]:

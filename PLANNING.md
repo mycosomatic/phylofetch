@@ -105,6 +105,13 @@ user's decisions in that session.
     Next: step 4b (NCBI References component page) using the project-scoped dir, then the
     ITSx / Exonerate / Primers component pages, then step 5 (Workflow orchestrator). The old
     monolithic `pages/2_Loci_Extraction.py` stays until the new pages reach parity._
+  - _(2026-06-20) Step 4b (NCBI References component page) **done**:_ new standalone
+    `pages/2_NCBI_References.py` — loci checkboxes → preview hit counts (`ncbi_search_count`)
+    → fetch into the per-project library → review/cull; organism defaults to the project
+    taxon; provenance to `workflow.steps.references`. Render verified headless (AppTest).
+    Runs alongside the monolith (interim duplicate "2" sidebar entry, by user choice).
+    **Deferred:** an "import from global library" button (only needed if old global refs
+    exist). Next: step 4c (ITSx page), 4d (Exonerate), 4e (Primers), then step 5 (Workflow).
 
 ### Review findings — risk register (2026-06-18)
 

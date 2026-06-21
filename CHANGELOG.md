@@ -5,6 +5,16 @@
 
 ## 2026-06-20
 
+- **NCBI References component page (D-012/D-013 / RM-007 step 4b).** New standalone
+  `pages/2_NCBI_References.py`: tick loci as **checkboxes** → **preview NCBI hit counts** for
+  the project taxon → **fetch** top-N (type-preferred) into the **per-project** library
+  (`<project>/references`), with a **review/cull** table. The search organism **defaults to the
+  project taxon** from the manifest (editable; hint to broaden species→genus→family). Fetch
+  provenance is recorded in the manifest (`workflow.steps.references`). New
+  `ncbi_utils.ncbi_search_count` (cheap `esearch retmax=0`) backs the preview. Runs alongside
+  the old `2_Loci_Extraction` page during the transition (sidebar shows both, by design).
+  Tests: 2 new (mocked `ncbi_search_count`) → **208 passing**; page render verified headless
+  via `AppTest` on the real project (taxon guard + preview/fetch controls appear correctly).
 - **Per-project reference libraries — data layer (D-013 / RM-007 step 4a).** `ncbi_utils.py`:
   the reference functions (`locus_ref_fasta`, `list_loci`, `load_ref_records`,
   `accessions_in_library`, `count_refs`, `fetch_and_store`, `delete_from_library`) now take a

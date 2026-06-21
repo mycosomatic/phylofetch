@@ -155,6 +155,41 @@ class TestBuildEntrezQuery:
         assert "complete cds" not in q.lower()
 
 
+class TestNcbiSearchCount:
+    def test_returns_count_and_builds_query(self, monkeypatch):
+        import phylofetch.ncbi_utils as nu
+        monkeypatch.setattr(nu, "_entrez_email", "x@y.z")
+        captured = {}
+
+        class _H:
+            def close(self):
+                pass
+
+        monkeypatch.setattr(nu.Entrez, "esearch",
+                            lambda db, term, retmax: captured.update(db=db, term=term,
+                                                                     retmax=retmax) or _H())
+        monkeypatch.setattr(nu.Entrez, "read", lambda h: {"Count": "42"})
+        n = nu.ncbi_search_count(["gapdh", "gpd"], "Alternaria")
+        assert n == 42
+        assert captured["retmax"] == 0
+        assert "gapdh[Title]" in captured["term"] and "Alternaria[Organism]" in captured["term"]
+
+    def test_type_only_adds_filter(self, monkeypatch):
+        import phylofetch.ncbi_utils as nu
+        monkeypatch.setattr(nu, "_entrez_email", "x@y.z")
+        captured = {}
+
+        class _H:
+            def close(self):
+                pass
+
+        monkeypatch.setattr(nu.Entrez, "esearch",
+                            lambda db, term, retmax: captured.update(term=term) or _H())
+        monkeypatch.setattr(nu.Entrez, "read", lambda h: {"Count": "3"})
+        assert nu.ncbi_search_count("rpb2", "Fungi", type_mode="type_only") == 3
+        assert "sequence_from_type" in captured["term"].lower()
+
+
 class TestLocusSearchTerms:
     def test_user_term_first_then_catalogue(self):
         terms = locus_search_terms("GAPDH", user_term="gpdA")
