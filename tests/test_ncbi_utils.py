@@ -33,7 +33,25 @@ from phylofetch.ncbi_utils import (
     parse_source_metadata,
     project_ref_dir,
     save_ref_meta,
+    taxon_fallbacks,
 )
+
+
+class TestTaxonFallbacks:
+    def test_species_falls_back_to_genus(self):
+        assert taxon_fallbacks("Alternaria eureka") == ["Alternaria eureka", "Alternaria"]
+
+    def test_aff_species_falls_back_to_genus(self):
+        # the novel-species case: 'aff.' name absent from NCBI -> genus fallback
+        assert taxon_fallbacks("Alternaria aff. eureka") == ["Alternaria aff. eureka", "Alternaria"]
+
+    def test_genus_only_no_duplicate(self):
+        assert taxon_fallbacks("Alternaria") == ["Alternaria"]
+
+    def test_whitespace_and_empty(self):
+        assert taxon_fallbacks("  Fusarium oxysporum ") == ["Fusarium oxysporum", "Fusarium"]
+        assert taxon_fallbacks("") == []
+        assert taxon_fallbacks("   ") == []
 
 
 # ── /type_material parsing ────────────────────────────────────────────────────

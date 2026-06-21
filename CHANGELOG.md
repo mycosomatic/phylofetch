@@ -5,6 +5,19 @@
 
 ## 2026-06-20
 
+- **Protein references for coding loci + taxon fallback (D-017).** Diagnosed that Exonerate
+  internal stops in barcoding genes were a **reference artifact, not a bad assembly** (BUSCO is
+  excellent; the same assembly gave a clean 0-stop ACT CDS from a full-length *A. dauci* protein
+  ref — 15→0 stops). Root cause: D-011 fetches partial-cds *genomic* barcodes (intron-containing;
+  they self-translate with stops), and `coding2genome` mis-frames them.
+  - `ncbi_utils`: new `taxon_fallbacks` (exact taxon → genus); `search_ncbi_protein` gains a
+    `field` param (default `[Protein Name]`).
+  - `pages/2_NCBI_References.py`: **Reference type** toggle (Protein default for coding /
+    Nucleotide), per-locus DB (rDNA forced nucleotide), **taxon fallback** in preview + fetch
+    (shows which taxon level was used), and protein fetch prefers **RefSeq/full-length** proteins
+    → Exonerate auto-runs protein2genome (frame-safe, intron-immune, cross-species).
+  - Verified live: `Alternaria aff. eureka` → genus fallback to `Alternaria` (RPB2 4564 / ACT 612
+    protein hits). Tests: `TestTaxonFallbacks` (+4) → **218 passing**.
 - **Bug fix — ITSx failed on genome assemblies (LXD-003).** ITSx runs HMMER `hmmscan`, which
   aborts on any sequence > 100 kb; genome contigs are Mb-scale, so ITSx silently returned no
   rDNA (exit 0 + empty). `itsx_utils.run_itsx` now chunks contigs > 90 kb into overlapping

@@ -32,7 +32,9 @@ from phylofetch.ncbi_utils import (
     ncbi_search_count,
     project_ref_dir,
     search_ncbi_nucleotide,
+    search_ncbi_protein,
     set_email,
+    taxon_fallbacks,
 )
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
@@ -86,16 +88,41 @@ taxon = st.text_input(
     "Organism / taxon for the reference search",
     value=default_taxon,
     placeholder="e.g. Alternaria",
-    help="Defaults to the project taxon from the Assembly Manager. Broaden it "
-         "(species → genus → family) if a locus returns few hits — a good reference set "
-         "usually spans a wider clade than your isolates.",
+    help="Defaults to the project taxon from the Assembly Manager. If the exact taxon returns "
+         "nothing (e.g. a novel 'aff.' species not in NCBI), the search automatically falls "
+         "back to the genus.",
 )
-type_mode_label = st.radio(
-    "Type material", ["Prefer type", "All", "Type only"], horizontal=True,
-    help="Prefer type: type-derived records sorted first (recommended). "
-         "All: no preference. Type only: restrict to NCBI 'sequence from type material'.",
-)
+
+cta, ctb = st.columns(2)
+with cta:
+    ref_type_label = st.radio(
+        "Reference type", ["Protein (recommended for coding)", "Nucleotide"], horizontal=False,
+        help="Protein → Exonerate uses protein2genome: a protein query is intron-free and "
+             "pins the reading frame, giving clean frame-checked CDS even from a congener "
+             "(cross-species works). Nucleotide → genomic barcodes for the relaxed-BLAST / "
+             "primer paths and GenBank-comparable trees. rDNA (ITS/LSU/SSU) is always "
+             "nucleotide (rRNA has no protein).",
+    )
+with ctb:
+    type_mode_label = st.radio(
+        "Type material", ["Prefer type", "All", "Type only"], horizontal=False,
+        help="Prefer type: type-derived records sorted first. All: no preference. "
+             "Type only: restrict to NCBI 'sequence from type material' (nucleotide barcodes).",
+    )
+ref_type = "protein" if ref_type_label.startswith("Protein") else "nucleotide"
 type_mode = {"Prefer type": "prefer", "All": "all", "Type only": "type_only"}[type_mode_label]
+if ref_type == "protein":
+    st.caption("🧬 Coding loci → **protein** references (protein2genome, frame-safe). "
+               "rDNA loci stay nucleotide for ITSx.")
+
+
+def _locus_db(loc: str) -> str:
+    """rRNA has no protein, so rDNA is always nucleotide; coding follows the chosen type."""
+    return "nucleotide" if loc in RDNA else ref_type
+
+
+def _field_for(db: str) -> str:
+    return "Protein Name" if db == "protein" else "Title"
 
 st.markdown("---")
 
@@ -151,22 +178,43 @@ else:
 
     if do_preview:
         counts: dict[str, int] = {}
+        used_tax: dict[str, str] = {}
+        dbs: dict[str, str] = {}
         prog = st.progress(0.0)
         for i, loc in enumerate(selected):
-            try:
-                counts[loc] = ncbi_search_count(locus_search_terms(loc), taxon, type_mode=type_mode)
-            except Exception as e:                          # noqa: BLE001 — surface to UI
-                counts[loc] = -1
-                st.warning(f"{loc}: {e}")
+            db = _locus_db(loc)
+            fld = _field_for(db)
+            terms = locus_search_terms(loc)
+            n, used = 0, taxon.strip()
+            for cand in taxon_fallbacks(taxon):     # exact taxon → genus
+                try:
+                    c = ncbi_search_count(terms, cand, db=db, field=fld, type_mode=type_mode)
+                except Exception as e:              # noqa: BLE001 — surface to UI
+                    c = -1
+                    st.warning(f"{loc} ({cand}): {e}")
+                used = cand
+                if c > 0:
+                    n = c
+                    break
+            counts[loc], used_tax[loc], dbs[loc] = n, used, db
             prog.progress((i + 1) / len(selected))
-        st.session_state["ref_preview"] = {"taxon": taxon, "type_mode": type_mode, "counts": counts}
+        st.session_state["ref_preview"] = {
+            "taxon": taxon, "type_mode": type_mode, "ref_type": ref_type,
+            "counts": counts, "used_tax": used_tax, "dbs": dbs,
+        }
 
     preview = st.session_state.get("ref_preview")
-    if preview and preview["taxon"] == taxon and preview["type_mode"] == type_mode:
+    if (preview and preview["taxon"] == taxon and preview["type_mode"] == type_mode
+            and preview.get("ref_type") == ref_type):
         counts = preview["counts"]
+        used_tax = preview["used_tax"]
+        dbs = preview["dbs"]
         rows = [{
             "Locus": loc,
-            "NCBI hits": ("error" if counts.get(loc, 0) < 0 else counts.get(loc, "—")),
+            "Type": dbs.get(loc, "?"),
+            "Taxon used": used_tax.get(loc, taxon) + (" (genus fallback)"
+                          if used_tax.get(loc, "") != taxon.strip() else ""),
+            "NCBI hits": counts.get(loc, "—"),
             "In library": count_refs(loc, ref_dir=ref_dir),
             "Will fetch": (0 if counts.get(loc, 0) <= 0 else min(counts[loc], max_per)),
         } for loc in selected]
@@ -181,15 +229,30 @@ else:
                     results[loc] = (0, 0, "no hits to fetch")
                     prog.progress((i + 1) / len(selected))
                     continue
-                terms = locus_search_terms(loc)
+                db, used, terms = dbs[loc], used_tax[loc], locus_search_terms(loc)
+                fld = _field_for(db)
+                want = min(n, max_per)
                 try:
-                    hits = search_ncbi_nucleotide(terms, taxon, max_results=min(n, max_per),
-                                                  type_mode=type_mode)
+                    if db == "protein":
+                        # over-fetch then prefer genome-annotated RefSeq (XP_/NP_…) full-length
+                        # proteins over short barcode-translation "partial" fragments — these
+                        # give complete, frame-clean orthologs for protein2genome.
+                        pool = search_ncbi_protein(terms, used, max_results=min(max(want * 3, 30), 100),
+                                                   type_mode=type_mode, field=fld)
+
+                        def _rank(h):
+                            acc = h.get("accession", "")
+                            return (acc[:3] in ("XP_", "NP_", "WP_", "YP_"), h.get("length", 0))
+
+                        pool.sort(key=_rank, reverse=True)
+                        hits = pool[:want]
+                    else:
+                        hits = search_ncbi_nucleotide(terms, used, max_results=want, type_mode=type_mode)
                     accs = [h["accession"] for h in hits if h.get("accession")]
-                    resolved = build_entrez_query(terms, taxon, field="Title")
+                    resolved = build_entrez_query(terms, used, field=fld)
                     added, skipped, errors = fetch_and_store(
-                        accs, loc, db="nucleotide",
-                        query=f"{resolved} [nucleotide, type_mode={type_mode}]",
+                        accs, loc, db=db,
+                        query=f"{resolved} [{db}, taxon={used}, type_mode={type_mode}]",
                         ref_dir=ref_dir,
                     )
                     results[loc] = (added, skipped, "; ".join(errors))
@@ -199,8 +262,11 @@ else:
 
             update_step(
                 project_dir, "references", status="done",
-                outputs={loc: {"in_library": count_refs(loc, ref_dir=ref_dir)} for loc in selected},
-                notes=f"taxon={taxon}; loci={','.join(selected)}; type_mode={type_mode}",
+                outputs={loc: {"in_library": count_refs(loc, ref_dir=ref_dir),
+                               "db": dbs.get(loc, ""), "taxon": used_tax.get(loc, "")}
+                         for loc in selected},
+                notes=f"taxon={taxon}; ref_type={ref_type}; loci={','.join(selected)}; "
+                      f"type_mode={type_mode}",
             )
             st.success("Fetch complete — provenance recorded in the project manifest.")
             for loc, (added, skipped, err) in results.items():

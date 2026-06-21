@@ -431,3 +431,33 @@ Format for each entry:
   found ITS (blastn has no length limit).
 - **Status:** active. `chunk_long_contigs` + 4 tests (`TestChunkLongContigs`); full suite 214.
   Benefits the ITSx component page automatically (it calls `run_itsx`).
+
+### D-017 (2026-06-20) — Protein references for coding loci + taxon fallback (fixes Exonerate stops)
+- **Decision:** The NCBI References page gains a **Reference type** toggle — **Protein** (default
+  for coding loci) vs **Nucleotide** — and a **taxon fallback** (`taxon_fallbacks`: exact taxon →
+  genus when the species returns nothing). For coding loci, Protein fetches genome-annotated
+  proteins (`search_ncbi_protein`, db=protein, `[Protein Name]`, **RefSeq/full-length preferred**)
+  so Exonerate auto-runs **protein2genome**. rDNA loci stay nucleotide (rRNA has no protein, ITSx
+  path). `ncbi_search_count`/`search_ncbi_protein` carry a `field` param; the preview shows the
+  per-locus DB and which taxon level was used.
+- **Why:** Diagnosed from the user's real data that Exonerate **internal stops in barcoding genes
+  were a reference artifact, not a bad assembly**: the D-011 synonym search fetches *partial-cds
+  barcodes* which for fungi are **genomic (intron-containing)**, and those self-translate with
+  stops (CAL ref 10, RPB2 ref 14); used as `coding2genome` queries (which assume an intron-free
+  CDS) they mis-place exon/intron boundaries → frameshifts → high-identity-with-many-stops.
+  **BUSCO is "fantastic"** for these assemblies (the definitive quality check), and a control
+  proved it: the *same* NS26-3-C2 assembly, ACT locus, went from **15 stops (nucleotide barcode
+  ref) → 0 stops, 100% id, clean 5-exon CDS** with a full-length **protein** ref from
+  *A. dauci* (a different species — cross-genus protein refs work, the canonical Exonerate use).
+  Protein + protein2genome is intron-immune and frame-pinned. The genus fallback handles the
+  user's target *Alternaria* aff. *eureka* (a novel species absent from NCBI → falls back to
+  *Alternaria*; verified live: RPB2 4564 / ACT 612 protein hits at genus level).
+- **Alternatives considered:** (a) Nucleotide-only + a "this ref translates with stops" guard —
+  insufficient: warns but still can't produce a clean CDS from a genomic barcode; rejected as the
+  fix (may add the guard later). (b) Require complete-cds nucleotide refs — scarce (the reason
+  D-011 dropped that filter). (c) `[Gene Name]`/`[All Fields]` for protein — `[Protein Name]` is
+  more precise for "proteins named X" and matches the descriptive synonyms.
+- **Status:** active. `taxon_fallbacks` + `search_ncbi_protein` field param + References-page
+  changes; `TestTaxonFallbacks` (+4) → 218 tests. Render + live genus-fallback/protein-count
+  verified. Nucleotide references remain right for the relaxed-BLAST / primer / GenBank-barcode
+  paths; protein is the default only for the Exonerate (frame-safe CDS) coding path.

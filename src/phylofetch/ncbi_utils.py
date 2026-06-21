@@ -393,10 +393,28 @@ def build_entrez_query(terms, organism: str = "", field: str = "Title") -> str:
     return f"{joined} AND {org}[Organism]" if org else joined
 
 
+def taxon_fallbacks(taxon: str) -> list[str]:
+    """
+    Ordered organism candidates for a reference search: the given taxon first, then its genus
+    (the first whitespace token) as a fallback. Lets a search for a novel/unsequenced species
+    (e.g. 'Alternaria aff. eureka', absent from NCBI) fall back to the genus 'Alternaria'.
+    De-duplicated case-insensitively; empty input → [].
+    """
+    t = (taxon or "").strip()
+    if not t:
+        return []
+    out = [t]
+    genus = t.split()[0]
+    if genus and genus.lower() != t.lower():
+        out.append(genus)
+    return out
+
+
 def search_ncbi_protein(gene_name, organism: str,
-                        max_results: int = 20, type_mode: str = "all") -> list[dict]:
+                        max_results: int = 20, type_mode: str = "all",
+                        field: str = "Protein Name") -> list[dict]:
     return _search_ncbi(
-        "protein", build_entrez_query(gene_name, organism, field="Gene Name"),
+        "protein", build_entrez_query(gene_name, organism, field=field),
         max_results, type_mode,
     )
 
