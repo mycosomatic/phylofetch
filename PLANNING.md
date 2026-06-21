@@ -119,6 +119,12 @@ user's decisions in that session.
     render verified headless. Next: step 4d (Exonerate component page — the coding-loci path,
     the most involved), then 4e (Primers), then step 5 (Workflow orchestrator), then retire the
     monolith + finalize page numbering.
+  - _(2026-06-20) Step 4d (Exonerate coding-loci component page) **done**:_ new standalone
+    `pages/2_Exonerate.py` — assemblies × coding loci (per-project library) and/or gene-of-interest
+    → BLAST-narrow + Exonerate frame-safe CDS (D-008), BLAST HSP fallback when exonerate absent;
+    per-project outputs + combined products; provenance to `workflow.steps.coding`. Reuses tested
+    extraction functions (no new src logic); render verified headless. Next: step 4e (Primers
+    component page), then step 5 (Workflow orchestrator), then retire monolith + finalize numbering.
 
 ### Review findings — risk register (2026-06-18)
 

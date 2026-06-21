@@ -5,6 +5,15 @@
 
 ## 2026-06-20
 
+- **Exonerate (coding loci) component page (RM-007 step 4d).** New standalone
+  `pages/2_Exonerate.py`: assemblies × coding loci (from the per-project reference library)
+  and/or an ad-hoc **gene of interest** → BLAST-narrow + Exonerate frame-safe CDS (D-008), with
+  the BLAST HSP-as-exon fallback + frame-safety warning when `exonerate` is absent. Per-project
+  outputs (`<project>/results/loci`) + combined CDS/protein/genomic/introns via
+  `merge_per_strain_outputs`; provenance to `workflow.steps.coding`. Reuses the already-tested
+  `extract_locus_exonerate` / `extract_locus` / `merge_per_strain_outputs` (no new src logic).
+  **210 tests** still pass; page render verified headless via AppTest (assemblies, loci, GOI
+  input, settings, run button; exonerate detected in the env so no fallback warning).
 - **ITSx (rDNA) component page + per-project extraction outputs (D-015 / RM-007 step 4c).**
   New standalone `pages/2_ITSx_rDNA.py`: pick assemblies + rDNA regions (ITS/ITS1/ITS2/LSU/SSU)
   → run ITSx → per-strain region FASTAs + cross-strain `*_combined.fasta`, with provenance to
