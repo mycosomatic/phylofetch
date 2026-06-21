@@ -147,6 +147,64 @@ def run_itsx(
     return result.returncode, log_text, found
 
 
+# ── rDNA region placement + combine (component-page layout, RM-007 step 4c) ───
+#
+# The extraction layout is <per_strain>/<strain>/<region>/<region>.fasta and
+# <combined>/<region>_combined.fasta. `region` is the user-facing name (ITS / ITS1 / ITS2 /
+# LSU / SSU); the full ITS maps to ITSx's "ITS_full" key. These helpers factor the logic the
+# monolithic page did inline so the ITSx component page can reuse it (and it is unit-tested).
+
+_RDNA_REGION_TO_ITSX_KEY = {
+    "ITS": "ITS_full", "ITS1": "ITS1", "ITS2": "ITS2", "LSU": "LSU", "SSU": "SSU",
+}
+
+
+def place_rdna_regions(found: dict[str, str], strain_out: str,
+                       regions: list[str]) -> dict[str, int]:
+    """
+    Copy the requested rDNA ``regions`` from an ITSx ``found`` map into
+    ``<strain_out>/<region>/<region>.fasta``. Returns {region: n_records} (0 when ITSx did
+    not detect that region).
+    """
+    counts: dict[str, int] = {}
+    for region in regions:
+        key = _RDNA_REGION_TO_ITSX_KEY.get(region, region)
+        dest_dir = Path(strain_out) / region
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{region}.fasta"
+        src = found.get(key)
+        if src and Path(src).exists():
+            shutil.copy(src, dest)
+            counts[region] = len(list(SeqIO.parse(str(dest), "fasta")))
+        else:
+            counts[region] = 0
+    return counts
+
+
+def combine_rdna_regions(per_strain_dir: str, combined_dir: str,
+                         regions: list[str]) -> dict[str, tuple[str, int]]:
+    """
+    Merge ``<strain>/<region>/<region>.fasta`` across strains into
+    ``<combined_dir>/<region>_combined.fasta``. Returns {region: (path, n_records)} for each
+    region that yielded at least one sequence.
+    """
+    Path(combined_dir).mkdir(parents=True, exist_ok=True)
+    result: dict[str, tuple[str, int]] = {}
+    for region in regions:
+        recs: list[SeqRecord] = []
+        for sd in sorted(Path(per_strain_dir).iterdir()):
+            if not sd.is_dir():
+                continue
+            fp = sd / region / f"{region}.fasta"
+            if fp.exists():
+                recs.extend(list(SeqIO.parse(str(fp), "fasta")))
+        if recs:
+            out = Path(combined_dir) / f"{region}_combined.fasta"
+            SeqIO.write(recs, str(out), "fasta")
+            result[region] = (str(out), len(recs))
+    return result
+
+
 # ── Multi-sample combiners ────────────────────────────────────────────────────
 
 def merge_per_strain_to_combined(per_strain_dir: str, combined_dir: str,

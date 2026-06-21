@@ -373,3 +373,19 @@ Format for each entry:
 - **Status:** active. Implemented as RM-007 step 4 — **4a** (this commit): `ref_dir` threading
   through `ncbi_utils` + `project_ref_dir` + tests, backward-compatible (global default
   unchanged); **4b**: the NCBI References component page consumes the project-scoped dir.
+
+### D-015 (2026-06-20) — Extraction outputs are per-project
+- **Decision:** Extraction outputs from the **new component pages** (per-strain + combined
+  locus FASTAs, logs) go under the project at **`<project>/results/loci/{per_strain,combined}`**,
+  not the shared global `output_base`. Alignment Prep already reads a user-chosen directory
+  (`rglob *_combined.fasta`), so it stays compatible by pointing at the project results dir
+  (its default will be repointed there when the monolith is retired). The legacy monolith keeps
+  using `output_base` until retirement.
+- **Why:** Consistent with per-project references (D-013) and the manifest model (D-012), and it
+  removes a real reproducibility hazard: `output_base` is a single config path shared by every
+  project, so two projects' extraction outputs would collide/overwrite. The project already has
+  a `results/` subdir (`init_project`), so no new structure is needed.
+- **Alternatives considered:** Keep the global `output_base` — zero downstream change but
+  collision-prone and inconsistent with per-project refs; rejected.
+- **Status:** active. Applied to the ITSx component page (RM-007 step 4c) onward; the
+  Exonerate/Primers pages follow the same convention; the monolith is unchanged until retired.

@@ -112,6 +112,13 @@ user's decisions in that session.
     Runs alongside the monolith (interim duplicate "2" sidebar entry, by user choice).
     **Deferred:** an "import from global library" button (only needed if old global refs
     exist). Next: step 4c (ITSx page), 4d (Exonerate), 4e (Primers), then step 5 (Workflow).
+  - _(2026-06-20) Step 4c (ITSx rDNA component page) **done** (D-015):_ new standalone
+    `pages/2_ITSx_rDNA.py` (assemblies + regions → ITSx → per-strain + combined), provenance to
+    `workflow.steps.rDNA`. **D-015:** extraction outputs are per-project under
+    `<project>/results/loci`. Tested helpers `place_rdna_regions` / `combine_rdna_regions`;
+    render verified headless. Next: step 4d (Exonerate component page — the coding-loci path,
+    the most involved), then 4e (Primers), then step 5 (Workflow orchestrator), then retire the
+    monolith + finalize page numbering.
 
 ### Review findings — risk register (2026-06-18)
 

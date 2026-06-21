@@ -5,6 +5,15 @@
 
 ## 2026-06-20
 
+- **ITSx (rDNA) component page + per-project extraction outputs (D-015 / RM-007 step 4c).**
+  New standalone `pages/2_ITSx_rDNA.py`: pick assemblies + rDNA regions (ITS/ITS1/ITS2/LSU/SSU)
+  → run ITSx → per-strain region FASTAs + cross-strain `*_combined.fasta`, with provenance to
+  `workflow.steps.rDNA`. **D-015:** extraction outputs are now **per-project** under
+  `<project>/results/loci/{per_strain,combined}` (not the shared `output_base`), avoiding
+  cross-project collisions; Alignment Prep reads any directory (`rglob`) so it stays compatible.
+  New tested helpers `itsx_utils.place_rdna_regions` / `combine_rdna_regions` factor the
+  region-placement + combine logic the monolith did inline. Tests: 2 new → **210 passing**;
+  page render verified headless via AppTest (7 assemblies, region checkboxes, run button).
 - **NCBI References component page (D-012/D-013 / RM-007 step 4b).** New standalone
   `pages/2_NCBI_References.py`: tick loci as **checkboxes** → **preview NCBI hit counts** for
   the project taxon → **fetch** top-N (type-preferred) into the **per-project** library

@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from phylofetch.itsx_utils import (
     ITSX_SUFFIXES,
     _probe_itsx_version,
+    combine_rdna_regions,
+    place_rdna_regions,
     run_itsx,
 )
 
@@ -209,3 +211,36 @@ class TestProbeITSxVersion:
         # If a version line is parsed, it should contain digits
         if version != "unknown":
             assert any(c.isdigit() for c in version)
+
+
+class TestRdnaPlacementAndCombine:
+    """RM-007 step 4c: per-strain region placement + cross-strain combine."""
+
+    def _fasta(self, path: Path, records):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f">{rid}\n{seq}\n" for rid, seq in records))
+
+    def test_place_maps_full_its_and_counts(self, tmp_path):
+        src = tmp_path / "itsx"
+        self._fasta(src / "s.full.fasta", [("c1", "ACGT"), ("c2", "TTTT")])
+        self._fasta(src / "s.LSU.fasta", [("c1", "GGGG")])
+        found = {"ITS_full": str(src / "s.full.fasta"), "LSU": str(src / "s.LSU.fasta")}
+        strain_out = tmp_path / "per_strain" / "s"
+
+        counts = place_rdna_regions(found, str(strain_out), ["ITS", "LSU", "SSU"])
+        assert counts == {"ITS": 2, "LSU": 1, "SSU": 0}
+        assert (strain_out / "ITS" / "ITS.fasta").exists()      # ITS_full -> ITS.fasta
+        assert (strain_out / "LSU" / "LSU.fasta").exists()
+        assert not (strain_out / "SSU" / "SSU.fasta").exists()  # absent region not written
+
+    def test_combine_merges_present_regions_only(self, tmp_path):
+        ps = tmp_path / "per_strain"
+        for strain, seq in [("A", "ACGT"), ("B", "TTTT")]:
+            self._fasta(ps / strain / "ITS" / "ITS.fasta", [(f"{strain}_ITS", seq)])
+        self._fasta(ps / "A" / "SSU" / "SSU.fasta", [("A_SSU", "GG")])
+
+        out = combine_rdna_regions(str(ps), str(tmp_path / "combined"), ["ITS", "SSU", "LSU"])
+        assert set(out) == {"ITS", "SSU"}            # LSU had no sequences -> omitted
+        its_path, its_n = out["ITS"]
+        assert its_n == 2 and its_path.endswith("ITS_combined.fasta")
+        assert out["SSU"][1] == 1
