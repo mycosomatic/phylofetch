@@ -353,3 +353,23 @@ Format for each entry:
   extra call; `stitle` chosen as dependency-free and sufficient for a reviewed suggestion.
 - **Status:** active. Implemented 2026-06-20; `taxon_id_utils.py` + 15 network-free tests
   (`tests/test_taxon_id_utils.py`); live remote-BLAST verified. Full suite 200 passing.
+
+### D-013 (2026-06-20) — Reference libraries are per-project
+- **Decision:** Per-locus reference libraries move from the global `~/.phylofetch/references/`
+  to **per-project** storage under `<project>/references/<locus>/`, with provenance recorded
+  in the project manifest (`workflow.steps.references`). The `ncbi_utils` reference functions
+  gain a `ref_dir` parameter (defaulting to the global path for backward compatibility), and a
+  `project_ref_dir(project_dir)` helper resolves `<project>/references`. The new References
+  component page and the combine step use the project-scoped directory. (Resolves the open
+  sub-decision flagged in D-012.)
+- **Why:** Chosen by the user (2026-06-20) for self-contained, reproducible, taxonomy-tailored
+  projects, consistent with the D-012 manifest backbone and RM-005 headless re-runs. The global
+  library predated the per-project manifest and kept no record of which references a given
+  analysis used. Re-fetching the same accession across projects (the cost) is acceptable for a
+  reproducible research workflow.
+- **Alternatives considered:** (a) Hybrid global download-cache + per-project selection — more
+  moving parts; deferred and revisitable if duplicate downloads become a pain. (b) Keep global
+  — zero refactor but weakest reproducibility and not taxonomy-tailored; rejected.
+- **Status:** active. Implemented as RM-007 step 4 — **4a** (this commit): `ref_dir` threading
+  through `ncbi_utils` + `project_ref_dir` + tests, backward-compatible (global default
+  unchanged); **4b**: the NCBI References component page consumes the project-scoped dir.

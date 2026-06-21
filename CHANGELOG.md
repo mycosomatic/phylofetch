@@ -5,6 +5,14 @@
 
 ## 2026-06-20
 
+- **Per-project reference libraries — data layer (D-013 / RM-007 step 4a).** `ncbi_utils.py`:
+  the reference functions (`locus_ref_fasta`, `list_loci`, `load_ref_records`,
+  `accessions_in_library`, `count_refs`, `fetch_and_store`, `delete_from_library`) now take a
+  `ref_dir` parameter defaulting to the global library, plus a new
+  `project_ref_dir(project_dir)` → `<project>/references`. Backward-compatible (the global
+  default is unchanged); per-project storage takes effect once the References component page
+  passes the project-scoped dir (step 4b). Tests: 6 new (`TestPerProjectRefDir`, incl.
+  two-project isolation + default-is-global guard). **206 passing** (was 200).
 - **ITS-based provisional taxon ID (D-014 / RM-007 step 3).** New
   `src/phylofetch/taxon_id_utils.py` and an "Identify taxon by ITS (NCBI remote BLAST)" control
   in the Assembly Manager: ITSx pulls the ITS region, `blastn -remote -db nt` (optionally

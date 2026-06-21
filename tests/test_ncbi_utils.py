@@ -18,13 +18,20 @@ from Bio.SeqRecord import SeqRecord
 
 from phylofetch.ncbi_utils import (
     LOCUS_CATALOGUE,
+    REF_DIR,
     RefRecord,
     _mark_type_set,
+    accessions_in_library,
     build_entrez_query,
+    count_refs,
+    delete_from_library,
+    list_loci,
     load_ref_meta,
+    locus_ref_fasta,
     locus_search_terms,
     normalize_type_kind,
     parse_source_metadata,
+    project_ref_dir,
     save_ref_meta,
 )
 
@@ -179,6 +186,54 @@ class TestCatalogueIsBarcodeFriendly:
     def test_coding_loci_have_synonyms(self):
         for name in self.CODING:
             assert LOCUS_CATALOGUE[name].get("synonyms"), f"{name} has no synonyms"
+
+
+# ── per-project reference libraries (D-013) ───────────────────────────────────
+
+class TestPerProjectRefDir:
+    def _write_lib(self, ref_dir, locus, records):
+        fasta = locus_ref_fasta(locus, ref_dir=ref_dir)      # also creates the dir
+        with open(fasta, "w") as f:
+            for rid, seq in records:
+                f.write(f">{rid}\n{seq}\n")
+        return fasta
+
+    def test_project_ref_dir_under_project(self, tmp_path):
+        d = project_ref_dir(tmp_path / "proj")
+        assert d == (tmp_path / "proj" / "references")
+        assert d.is_dir()
+
+    def test_locus_fasta_path_honors_ref_dir(self, tmp_path):
+        rd = tmp_path / "refs"
+        p = locus_ref_fasta("ITS", ref_dir=rd)
+        assert str(rd) in p and p.endswith("ITS/ITS_refs.fasta")
+
+    def test_count_accessions_and_list(self, tmp_path):
+        rd = tmp_path / "refs"
+        self._write_lib(rd, "RPB2", [("MN1.1", "ACGT"), ("MN2.1", "ACGT")])
+        assert count_refs("RPB2", ref_dir=rd) == 2
+        assert {"MN1.1", "MN1", "MN2.1", "MN2"} <= accessions_in_library("RPB2", ref_dir=rd)
+        assert list_loci(ref_dir=rd) == ["RPB2"]
+
+    def test_two_projects_are_isolated(self, tmp_path):
+        a, b = tmp_path / "A" / "references", tmp_path / "B" / "references"
+        self._write_lib(a, "ITS", [("X.1", "ACGT")])
+        assert count_refs("ITS", ref_dir=a) == 1
+        assert count_refs("ITS", ref_dir=b) == 0
+        assert list_loci(ref_dir=b) == []
+
+    def test_delete_honors_ref_dir(self, tmp_path):
+        rd = tmp_path / "refs"
+        self._write_lib(rd, "ITS", [("X.1", "ACGT"), ("Y.1", "ACGT")])
+        assert delete_from_library("ITS", "X.1", ref_dir=rd) is True
+        assert count_refs("ITS", ref_dir=rd) == 1
+        assert accessions_in_library("ITS", ref_dir=rd) >= {"Y.1"}
+
+    def test_default_ref_dir_is_global(self):
+        # backward compat: the default still points at the shared global library
+        import inspect
+        for fn in (count_refs, list_loci, accessions_in_library, delete_from_library):
+            assert inspect.signature(fn).parameters["ref_dir"].default == REF_DIR
 
 
 # ── sidecar round-trip ────────────────────────────────────────────────────────

@@ -38,42 +38,53 @@ def _require_email() -> None:
 
 # ── Reference library ────────────────────────────────────────────────────────
 
+# Global (default) reference library. Per-project libraries live under <project>/references
+# (D-013); every reference function takes a `ref_dir` defaulting here, so existing callers and
+# the global library keep working unchanged until a project-scoped dir is passed.
 REF_DIR = Path.home() / ".phylofetch" / "references"
 
 
-def locus_ref_fasta(locus_name: str) -> str:
-    d = REF_DIR / locus_name
+def project_ref_dir(project_dir) -> Path:
+    """Per-project reference-library root (D-013): ``<project>/references`` (created)."""
+    d = Path(project_dir) / "references"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def locus_ref_fasta(locus_name: str, ref_dir: Path = REF_DIR) -> str:
+    d = Path(ref_dir) / locus_name
     d.mkdir(parents=True, exist_ok=True)
     return str(d / f"{locus_name}_refs.fasta")
 
 
-def list_loci() -> list[str]:
-    if not REF_DIR.exists():
+def list_loci(ref_dir: Path = REF_DIR) -> list[str]:
+    ref_dir = Path(ref_dir)
+    if not ref_dir.exists():
         return []
     return sorted(
-        p.name for p in REF_DIR.iterdir()
+        p.name for p in ref_dir.iterdir()
         if p.is_dir() and (p / f"{p.name}_refs.fasta").exists()
     )
 
 
-def load_ref_records(locus_name: str) -> list:
-    fasta = locus_ref_fasta(locus_name)
+def load_ref_records(locus_name: str, ref_dir: Path = REF_DIR) -> list:
+    fasta = locus_ref_fasta(locus_name, ref_dir=ref_dir)
     if not os.path.exists(fasta):
         return []
     return list(SeqIO.parse(fasta, "fasta"))
 
 
-def accessions_in_library(locus_name: str) -> set:
+def accessions_in_library(locus_name: str, ref_dir: Path = REF_DIR) -> set:
     accs: set = set()
-    for r in load_ref_records(locus_name):
+    for r in load_ref_records(locus_name, ref_dir=ref_dir):
         base = r.id.split(".")[0]
         accs.add(r.id)
         accs.add(base)
     return accs
 
 
-def count_refs(locus_name: str) -> int:
-    return len(load_ref_records(locus_name))
+def count_refs(locus_name: str, ref_dir: Path = REF_DIR) -> int:
+    return len(load_ref_records(locus_name, ref_dir=ref_dir))
 
 
 # ── Reference metadata sidecar (type material, voucher, provenance) ──────────
@@ -421,16 +432,18 @@ def fetch_nucleotide_by_accession(accession: str) -> Optional[SeqRecord]:
 def fetch_and_store(accessions: list[str], locus_name: str,
                     db: str = "protein",
                     custom_label: Optional[str] = None,
-                    query: str = "") -> tuple[int, int, list]:
+                    query: str = "",
+                    ref_dir: Path = REF_DIR) -> tuple[int, int, list]:
     """
     Fetch accessions, append sequences to the locus FASTA, and record per-accession
     metadata (organism / strain / voucher / type material) in the sidecar JSON.
-    ``query`` is stored for provenance. Returns (added, skipped, errors).
+    ``query`` is stored for provenance. ``ref_dir`` selects the reference library root
+    (per-project when passed; global by default — D-013). Returns (added, skipped, errors).
     """
     _require_email()
-    existing = accessions_in_library(locus_name)
-    fasta_path = locus_ref_fasta(locus_name)
-    meta = load_ref_meta(locus_name)
+    existing = accessions_in_library(locus_name, ref_dir=ref_dir)
+    fasta_path = locus_ref_fasta(locus_name, ref_dir=ref_dir)
+    meta = load_ref_meta(locus_name, ref_dir=ref_dir)
     added, skipped, errors = 0, 0, []
     with open(fasta_path, "a") as out_f:
         for acc in accessions:
@@ -452,13 +465,14 @@ def fetch_and_store(accessions: list[str], locus_name: str,
                 added += 1
             except Exception as e:
                 errors.append(f"{acc}: {e}")
-    save_ref_meta(locus_name, meta)
-    _log_fetch(locus_name, db, query, accessions, added, skipped)
+    save_ref_meta(locus_name, meta, ref_dir=ref_dir)
+    _log_fetch(locus_name, db, query, accessions, added, skipped, ref_dir=ref_dir)
     return added, skipped, errors
 
 
-def delete_from_library(locus_name: str, accession: str) -> bool:
-    fasta_path = locus_ref_fasta(locus_name)
+def delete_from_library(locus_name: str, accession: str,
+                        ref_dir: Path = REF_DIR) -> bool:
+    fasta_path = locus_ref_fasta(locus_name, ref_dir=ref_dir)
     if not os.path.exists(fasta_path):
         return False
     records = list(SeqIO.parse(fasta_path, "fasta"))

@@ -99,8 +99,12 @@ user's decisions in that session.
   - _(2026-06-20) Step 3 (ITS→BLAST provisional-ID feeder) **done** (D-014):_ remote NCBI
     `blastn` of the ITSx ITS region with a ranked-organism picker in the Assembly Manager;
     chosen taxon written with `taxon_source=its_blast`. New `src/phylofetch/taxon_id_utils.py`
-    + 15 tests; live-verified against NCBI. Next: step 4 (component pages) — this reaches the
-    **D-013** references global/per-project decision, so settle that first.
+    + 15 tests; live-verified against NCBI.
+  - _(2026-06-20) **D-013 resolved = per-project.** Step 4a (ncbi_utils `ref_dir` threading +
+    `project_ref_dir` + 6 tests) **done**, backward-compatible (global default unchanged).
+    Next: step 4b (NCBI References component page) using the project-scoped dir, then the
+    ITSx / Exonerate / Primers component pages, then step 5 (Workflow orchestrator). The old
+    monolithic `pages/2_Loci_Extraction.py` stays until the new pages reach parity._
 
 ### Review findings — risk register (2026-06-18)
 
