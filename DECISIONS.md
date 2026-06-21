@@ -461,3 +461,25 @@ Format for each entry:
   changes; `TestTaxonFallbacks` (+4) → 218 tests. Render + live genus-fallback/protein-count
   verified. Nucleotide references remain right for the relaxed-BLAST / primer / GenBank-barcode
   paths; protein is the default only for the Exonerate (frame-safe CDS) coding path.
+
+### D-018 (2026-06-20) — In-app project/cache management + mixed-reference-type guard
+- **Decision:** (1) Add a **Manage Data** tab to Project Setup to inspect and clear per-project
+  caches (references / results / run-logs / workflow state), clear the assembly registry, clear
+  the legacy global reference cache, and **delete a project** (guarded). (2) Add a guard on the
+  References page: when the reference type being fetched (protein/nucleotide) differs from what a
+  locus already holds, the locus is **skipped with a warning** (shown in the preview and at
+  fetch) rather than mixing types in one `*_refs.fasta`.
+- **Why:** The user is starting projects from scratch (new assemblies replacing old) and the
+  protein-reference fix (D-017) requires clearing the old *nucleotide* coding refs first — there
+  was no in-app way to clear caches (only create/open). Without the guard, fetching protein into
+  a locus that already holds nucleotide refs silently produces a mixed file, and
+  `detect_fasta_type` (which samples the first sequence) would then pick the wrong Exonerate
+  model — a quiet corruption. Skip+warn (vs hard block) was the user's call ("add the warn").
+- **Alternatives considered:** (a) Hard-block the mismatched fetch — heavier; the user chose a
+  warning. (b) Auto-separate protein/nucleotide into sub-files per locus — larger change;
+  deferred. (c) No project deletion in-app — rejected; needed for "start fresh".
+- **Status:** active. `project_manager` helpers (`project_data_summary`, `clear_project_data`,
+  `reset_workflow`, `delete_project`, `clear_global_reference_cache` — all guarded; delete refuses
+  non-projects and protected dirs) + 8 tests; Project Setup "Manage Data" tab; References
+  skip+warn on type mismatch. Full suite 226. Verified the guard fires on the real project
+  (coding loci are nucleotide → would skip a protein fetch).

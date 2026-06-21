@@ -19,6 +19,7 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from phylofetch.blast_loci_utils import detect_fasta_type
 from phylofetch.config import load_config, save_config
 from phylofetch.ncbi_utils import (
     LOCUS_CATALOGUE,
@@ -28,6 +29,7 @@ from phylofetch.ncbi_utils import (
     fetch_and_store,
     load_ref_meta,
     load_ref_records,
+    locus_ref_fasta,
     locus_search_terms,
     ncbi_search_count,
     project_ref_dir,
@@ -124,6 +126,14 @@ def _locus_db(loc: str) -> str:
 def _field_for(db: str) -> str:
     return "Protein Name" if db == "protein" else "Title"
 
+
+def _existing_ref_type(loc: str):
+    """Type ('nucleotide'/'protein') of refs already in this project's locus library, or None."""
+    fa = Path(locus_ref_fasta(loc, ref_dir=ref_dir))
+    if fa.exists() and fa.stat().st_size > 0:
+        return detect_fasta_type(str(fa))
+    return None
+
 st.markdown("---")
 
 # ── 2 · Loci checkboxes ───────────────────────────────────────────────────────
@@ -209,27 +219,51 @@ else:
         counts = preview["counts"]
         used_tax = preview["used_tax"]
         dbs = preview["dbs"]
-        rows = [{
-            "Locus": loc,
-            "Type": dbs.get(loc, "?"),
-            "Taxon used": used_tax.get(loc, taxon) + (" (genus fallback)"
-                          if used_tax.get(loc, "") != taxon.strip() else ""),
-            "NCBI hits": counts.get(loc, "—"),
-            "In library": count_refs(loc, ref_dir=ref_dir),
-            "Will fetch": (0 if counts.get(loc, 0) <= 0 else min(counts[loc], max_per)),
-        } for loc in selected]
+        rows, mismatches = [], []
+        for loc in selected:
+            db = dbs.get(loc, "?")
+            ex = _existing_ref_type(loc)
+            mism = ex is not None and ex != db
+            if mism:
+                mismatches.append((loc, ex, db))
+            rows.append({
+                "Locus": loc,
+                "Fetch type": db,
+                "Existing": (f"⚠️ {ex}" if mism else (ex or "—")),
+                "Taxon used": used_tax.get(loc, taxon) + (" (genus fallback)"
+                              if used_tax.get(loc, "") != taxon.strip() else ""),
+                "NCBI hits": counts.get(loc, "—"),
+                "Will fetch": (0 if (mism or counts.get(loc, 0) <= 0)
+                               else min(counts[loc], max_per)),
+            })
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+        if mismatches:
+            st.warning(
+                "⚠️ **Reference-type mismatch** — these loci already hold a *different* reference "
+                "type and will be **skipped** (mixing protein + nucleotide in one locus file "
+                "breaks Exonerate model selection). Clear them first in **Review library** below "
+                "or in **Project Setup → Manage Data**:\n\n"
+                + "  ·  ".join(f"`{loc}`: have **{ex}**, fetching **{db}**"
+                              for loc, ex, db in mismatches)
+            )
 
         if st.button("⬇️ Fetch selected loci", type="primary"):
             results: dict[str, tuple] = {}
             prog = st.progress(0.0)
             for i, loc in enumerate(selected):
+                db, used, terms = dbs[loc], used_tax[loc], locus_search_terms(loc)
+                ex = _existing_ref_type(loc)
+                if ex is not None and ex != db:        # don't mix types in one locus file
+                    results[loc] = (0, 0, f"skipped: library already has {ex} refs (not {db}) — "
+                                          "clear it first")
+                    prog.progress((i + 1) / len(selected))
+                    continue
                 n = counts.get(loc, 0)
                 if n <= 0:
                     results[loc] = (0, 0, "no hits to fetch")
                     prog.progress((i + 1) / len(selected))
                     continue
-                db, used, terms = dbs[loc], used_tax[loc], locus_search_terms(loc)
                 fld = _field_for(db)
                 want = min(n, max_per)
                 try:

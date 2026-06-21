@@ -519,6 +519,89 @@ def set_assembly_taxon(project_dir: str | Path, strain_id: str, taxon: str,
     return registry
 
 
+# ── Project data management (inspect / clear caches, delete project) ──────────
+
+_CLEARABLE_SUBDIRS = ("references", "results", "runs", "scratch", "logs")
+
+
+def _is_phylofetch_project(project_dir: str | Path) -> bool:
+    return (Path(project_dir) / "metadata" / "project_manifest.json").exists()
+
+
+def project_data_summary(project_dir: str | Path) -> dict:
+    """Counts + on-disk byte sizes of a project's caches, for the data-management UI."""
+    root = Path(project_dir)
+
+    def _bytes(p: Path) -> int:
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.exists() else 0
+
+    refs = root / "references"
+    runs = root / "runs"
+    combined = root / "results" / "loci" / "combined"
+    n_ref_loci = (len([d for d in refs.iterdir()
+                       if d.is_dir() and (d / f"{d.name}_refs.fasta").exists()])
+                  if refs.exists() else 0)
+    return {
+        "n_assemblies": len(load_assembly_registry(project_dir)),
+        "n_ref_loci": n_ref_loci,
+        "ref_bytes": _bytes(refs),
+        "n_combined": len(list(combined.glob("*.fasta"))) if combined.exists() else 0,
+        "results_bytes": _bytes(root / "results"),
+        "n_runs": len([d for d in runs.iterdir() if d.is_dir()]) if runs.exists() else 0,
+        "runs_bytes": _bytes(runs),
+    }
+
+
+def clear_project_data(project_dir: str | Path, subdir: str) -> bool:
+    """
+    Remove and recreate one project cache subdir (references / results / runs / scratch / logs).
+    Returns True if it existed. Refuses unknown subdirs and non-project paths.
+    """
+    if subdir not in _CLEARABLE_SUBDIRS:
+        raise ValueError(f"not a clearable subdir: {subdir!r}")
+    root = Path(project_dir)
+    if not _is_phylofetch_project(root):
+        raise ValueError("not a phylofetch project (no metadata/project_manifest.json)")
+    target = root / subdir
+    existed = target.exists()
+    if existed:
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    return existed
+
+
+def reset_workflow(project_dir: str | Path) -> dict:
+    """Reset the manifest's workflow/step state to fresh (keeps identity + default_taxon)."""
+    m = load_project_manifest(project_dir)
+    m["workflow"] = _default_workflow()
+    save_project_manifest(project_dir, m)
+    return m
+
+
+def delete_project(project_dir: str | Path) -> bool:
+    """
+    Delete an entire project directory. Guarded: must be a phylofetch project and not a
+    protected directory (home, the projects root, or '/'). Returns True on deletion.
+    """
+    root = Path(project_dir).expanduser().resolve()
+    if not _is_phylofetch_project(root):
+        raise ValueError("refusing to delete: not a phylofetch project")
+    protected = {Path.home().resolve(), DEFAULT_PROJECTS_ROOT.expanduser().resolve(), Path("/")}
+    if root in protected:
+        raise ValueError(f"refusing to delete protected directory: {root}")
+    shutil.rmtree(root)
+    return True
+
+
+def clear_global_reference_cache() -> bool:
+    """Remove the shared global reference library (~/.phylofetch/references). True if it existed."""
+    cache = Path.home() / ".phylofetch" / "references"
+    existed = cache.exists()
+    if existed:
+        shutil.rmtree(cache)
+    return existed
+
+
 class RunManager:
     """Execute and log external commands with full reproducibility artifacts."""
 

@@ -5,6 +5,19 @@
 
 ## 2026-06-20
 
+- **In-app project/cache management + mixed-reference-type guard (D-018).**
+  - `project_manager`: new guarded helpers `project_data_summary`, `clear_project_data`
+    (references/results/runs/scratch/logs), `reset_workflow`, `delete_project` (refuses
+    non-projects + protected dirs), `clear_global_reference_cache`. +8 tests.
+  - `pages/0_Project_Setup.py`: new **Manage Data** tab — cache summary (counts + sizes) and
+    buttons (behind a confirm) to clear references / results / run-logs / workflow, clear all
+    assemblies, clear the global cache, and delete the project (type-name confirm). Lets you
+    start a project from scratch for new assemblies.
+  - `pages/2_NCBI_References.py`: **reference-type mismatch guard** — fetching a type
+    (protein/nucleotide) that differs from a locus's existing refs is **skipped with a warning**
+    (preview + fetch) so protein and nucleotide never mix in one locus file (which would break
+    Exonerate model selection). Verified the guard fires on the real project.
+  - **226 passing** (was 218).
 - **Protein references for coding loci + taxon fallback (D-017).** Diagnosed that Exonerate
   internal stops in barcoding genes were a **reference artifact, not a bad assembly** (BUSCO is
   excellent; the same assembly gave a clean 0-stop ACT CDS from a full-length *A. dauci* protein
