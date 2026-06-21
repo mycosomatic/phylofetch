@@ -9,6 +9,7 @@ Covers:
   - PrimerPair dataclass defaults
 """
 
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -23,10 +24,13 @@ from Bio import SeqIO
 from phylofetch.primer_utils import (
     PRIMER_CATALOGUE,
     LOCUS_PRIMER_MAP,
+    MAX_PRIMER_EXPANSION,
     PrimerPair,
     _effective_mismatch,
     _run_blastn_short,
+    degeneracy_count,
     delete_user_primer,
+    expand_degenerate_primer,
     find_primer_amplicons,
     extract_primer_amplicon,
     get_primer_catalogue,
@@ -36,6 +40,8 @@ from phylofetch.primer_utils import (
     run_primer_extraction,
     save_user_primer,
 )
+
+HAS_BLASTN = shutil.which("blastn") is not None
 
 
 # ── Catalogue sanity checks ───────────────────────────────────────────────────
@@ -454,3 +460,153 @@ class TestEditDistanceHardening:
             cands = find_primer_amplicons("fake.fasta", self._PP, max_mismatches=2)
         assert len(cands) == 1
         assert cands[0]["total_edit"] == 1
+
+
+# ── Degenerate (IUPAC) primer expansion — D-009 ───────────────────────────────
+
+class TestDegeneracyExpansion:
+    def test_concrete_primer_is_single_variant(self):
+        assert expand_degenerate_primer("ACGT") == ["ACGT"]
+        assert degeneracy_count("ACGT") == 1
+
+    def test_iupac_expansion_is_exhaustive_and_correct(self):
+        # Y = C/T, R = A/G  ->  A·Y·R = {ACA, ACG, ATA, ATG}
+        assert set(expand_degenerate_primer("AYR")) == {"ACA", "ACG", "ATA", "ATG"}
+
+    def test_n_expands_to_four_bases(self):
+        assert set(expand_degenerate_primer("N")) == {"A", "C", "G", "T"}
+        assert degeneracy_count("NN") == 16
+
+    def test_u_is_treated_as_t(self):
+        assert expand_degenerate_primer("AUG") == ["ATG"]
+
+    def test_whitespace_and_case_normalised(self):
+        assert expand_degenerate_primer(" ay r ") == expand_degenerate_primer("AYR")
+
+    def test_count_matches_expansion_length(self):
+        for s in ("GAYGAYMGWGATCAYTTYGG", "CCNGCDATNTCRTTRTCCATRTA", "ACGT"):
+            assert degeneracy_count(s) == len(expand_degenerate_primer(s))
+
+    def test_over_cap_raises_valueerror(self):
+        # 4^8 = 65536 > cap; must refuse rather than silently mis-search
+        with pytest.raises(ValueError):
+            expand_degenerate_primer("N" * 8)
+
+    def test_all_builtin_pairs_within_cap(self):
+        # Guards future catalogue additions from silently exceeding the cap.
+        for name, pp in load_builtin_primers().items():
+            assert degeneracy_count(pp.fwd) <= MAX_PRIMER_EXPANSION, name
+            assert degeneracy_count(pp.rev) <= MAX_PRIMER_EXPANSION, name
+            expand_degenerate_primer(pp.fwd)   # must not raise
+            expand_degenerate_primer(pp.rev)
+
+
+class TestDegenerateSearchBucketing:
+    """find_primer_amplicons tags expanded variants FWD_*/REV_* and re-buckets them."""
+
+    _PP = PrimerPair(name="deg", locus="RPB2",
+                     fwd="GAYGAYMGWGATCAYTTYGG", rev="TGGATYTTGTCRTCCACCAT",
+                     min_amplicon=100, max_amplicon=2000)
+
+    def test_variant_prefixes_are_bucketed(self):
+        # Hits come back tagged with a variant suffix (FWD_7 / REV_3).
+        hits = [
+            {"qseqid": "FWD_7", "sseqid": "c1", "pident": 100.0, "length": 20,
+             "mismatch": 0, "qstart": 1, "qend": 20, "sstart": 50, "send": 69,
+             "evalue": 1e-5, "bitscore": 40.0},
+            {"qseqid": "REV_3", "sseqid": "c1", "pident": 100.0, "length": 20,
+             "mismatch": 0, "qstart": 1, "qend": 20, "sstart": 600, "send": 581,
+             "evalue": 1e-5, "bitscore": 40.0},
+        ]
+        with patch("phylofetch.primer_utils._run_blastn_short", return_value=hits):
+            cands = find_primer_amplicons("fake.fa", self._PP, max_mismatches=2)
+        assert len(cands) == 1
+        assert (cands[0]["amp_start"], cands[0]["amp_end"]) == (50, 600)
+        assert cands[0]["total_edit"] == 0
+
+    def test_variant_duplicates_collapse_to_best(self):
+        # Two FWD variants bind the SAME site (same coords) at different edit
+        # distances; collapse to one candidate keeping the lower edit.
+        hits = [
+            {"qseqid": "FWD_0", "sseqid": "c1", "pident": 100.0, "length": 20,
+             "mismatch": 2, "qstart": 1, "qend": 20, "sstart": 100, "send": 119,
+             "evalue": 1e-3, "bitscore": 35.0},
+            {"qseqid": "FWD_1", "sseqid": "c1", "pident": 100.0, "length": 20,
+             "mismatch": 0, "qstart": 1, "qend": 20, "sstart": 100, "send": 119,
+             "evalue": 1e-5, "bitscore": 40.0},
+            {"qseqid": "REV_0", "sseqid": "c1", "pident": 100.0, "length": 20,
+             "mismatch": 0, "qstart": 1, "qend": 20, "sstart": 600, "send": 581,
+             "evalue": 1e-5, "bitscore": 40.0},
+        ]
+        with patch("phylofetch.primer_utils._run_blastn_short", return_value=hits):
+            cands = find_primer_amplicons("fake.fa", self._PP, max_mismatches=2)
+        assert len(cands) == 1
+        assert cands[0]["total_edit"] == 0
+
+    def test_too_degenerate_primer_surfaces_status(self, tmp_path):
+        # run_primer_extraction must report (not crash) when a primer over-expands.
+        pp = PrimerPair(name="junk", locus="ITS", fwd="N" * 10, rev="ACGTACGT",
+                        min_amplicon=100, max_amplicon=2000)
+        seq = "ACGT" * 500
+        asm = tmp_path / "asm.fa"
+        SeqIO.write([SeqRecord(Seq(seq), id="c1", description="")], str(asm), "fasta")
+        result, status = run_primer_extraction(
+            str(asm), pp, str(tmp_path / "out"), "S1", "ITS",
+        )
+        assert result is None
+        assert "too degenerate" in status.lower()
+
+
+class TestMathenyRPBPairs:
+    def test_rpb1_pair_present_and_exact(self):
+        pp = PRIMER_CATALOGUE["RPB1-Af/RPB1-Cr"]
+        assert pp.locus == "RPB1"
+        assert pp.fwd == "GARTGYCCDGGDCAYTTYGG"
+        assert pp.rev == "CCNGCDATNTCRTTRTCCATRTA"
+        assert "Stiller" in pp.citation and "Matheny" in pp.citation
+
+    def test_rpb2_5to11_pair_present_and_exact(self):
+        pp = PRIMER_CATALOGUE["fRPB2-5F/bRPB2-11R1"]
+        assert pp.locus == "RPB2"
+        assert pp.fwd == "GAYGAYMGWGATCAYTTYGG"
+        assert pp.rev == "TGGATYTTGTCRTCCACCAT"
+        assert "Matheny" in pp.citation
+
+    def test_rpb1_locus_now_has_a_primer(self):
+        assert "RPB1" in LOCUS_PRIMER_MAP
+        assert "RPB1-Af/RPB1-Cr" in LOCUS_PRIMER_MAP["RPB1"]
+
+
+@pytest.mark.skipif(not HAS_BLASTN, reason="blastn not on PATH")
+class TestDegenerateSearchEndToEnd:
+    """Real blastn: a degenerate pair must find an amplicon the raw primer can't seed."""
+
+    def test_degenerate_rpb2_pair_finds_perfect_amplicon(self, tmp_path):
+        fwd_site = "GATGACCGAGATCACTTCGG"          # resolves fRPB2-5F GAYGAYMGWGATCAYTTYGG
+        rev_resolved = "TGGATCTTGTCATCCACCAT"       # resolves bRPB2-11R1 TGGATYTTGTCRTCCACCAT
+        rev_on_plus = str(Seq(rev_resolved).reverse_complement())
+        filler = ("ACGATGCATGCATTGCAACGTACGATCGATCGGATC" * 60)[:1460]
+        contig = "GGGGCCCCAAAATTTT" + fwd_site + filler + rev_on_plus + "TTTTAAAACCCCGGGG"
+        asm = tmp_path / "asm.fa"
+        SeqIO.write([SeqRecord(Seq(contig), id="ctg_rpb2", description="")], str(asm), "fasta")
+
+        pp = PRIMER_CATALOGUE["fRPB2-5F/bRPB2-11R1"]
+        cands = find_primer_amplicons(str(asm), pp, max_mismatches=2)
+        assert cands, "degenerate pair found no amplicon"
+        assert cands[0]["total_edit"] == 0
+        assert cands[0]["amp_len"] == 1500
+
+    def test_raw_degenerate_primer_alone_would_not_seed(self, tmp_path):
+        # Documents WHY expansion is needed: the un-expanded degenerate primer has
+        # no 7-bp concrete run, so blastn-short (word_size 7) seeds nothing.
+        import subprocess, os
+        primer = tmp_path / "p.fa"
+        primer.write_text(">deg\nGAYGAYMGWGATCAYTTYGG\n")
+        target = tmp_path / "t.fa"
+        target.write_text(">t\nGATGACCGAGATCACTTCGGTACGTACGTACGTACGT\n")
+        proc = subprocess.run(
+            ["blastn", "-task", "blastn-short", "-query", str(primer),
+             "-subject", str(target), "-word_size", "7", "-outfmt", "6"],
+            capture_output=True, text=True,
+        )
+        assert proc.stdout.strip() == "", "expected no hits for raw degenerate primer"

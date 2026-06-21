@@ -38,42 +38,53 @@ def _require_email() -> None:
 
 # ── Reference library ────────────────────────────────────────────────────────
 
+# Global (default) reference library. Per-project libraries live under <project>/references
+# (D-013); every reference function takes a `ref_dir` defaulting here, so existing callers and
+# the global library keep working unchanged until a project-scoped dir is passed.
 REF_DIR = Path.home() / ".phylofetch" / "references"
 
 
-def locus_ref_fasta(locus_name: str) -> str:
-    d = REF_DIR / locus_name
+def project_ref_dir(project_dir) -> Path:
+    """Per-project reference-library root (D-013): ``<project>/references`` (created)."""
+    d = Path(project_dir) / "references"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def locus_ref_fasta(locus_name: str, ref_dir: Path = REF_DIR) -> str:
+    d = Path(ref_dir) / locus_name
     d.mkdir(parents=True, exist_ok=True)
     return str(d / f"{locus_name}_refs.fasta")
 
 
-def list_loci() -> list[str]:
-    if not REF_DIR.exists():
+def list_loci(ref_dir: Path = REF_DIR) -> list[str]:
+    ref_dir = Path(ref_dir)
+    if not ref_dir.exists():
         return []
     return sorted(
-        p.name for p in REF_DIR.iterdir()
+        p.name for p in ref_dir.iterdir()
         if p.is_dir() and (p / f"{p.name}_refs.fasta").exists()
     )
 
 
-def load_ref_records(locus_name: str) -> list:
-    fasta = locus_ref_fasta(locus_name)
+def load_ref_records(locus_name: str, ref_dir: Path = REF_DIR) -> list:
+    fasta = locus_ref_fasta(locus_name, ref_dir=ref_dir)
     if not os.path.exists(fasta):
         return []
     return list(SeqIO.parse(fasta, "fasta"))
 
 
-def accessions_in_library(locus_name: str) -> set:
+def accessions_in_library(locus_name: str, ref_dir: Path = REF_DIR) -> set:
     accs: set = set()
-    for r in load_ref_records(locus_name):
+    for r in load_ref_records(locus_name, ref_dir=ref_dir):
         base = r.id.split(".")[0]
         accs.add(r.id)
         accs.add(base)
     return accs
 
 
-def count_refs(locus_name: str) -> int:
-    return len(load_ref_records(locus_name))
+def count_refs(locus_name: str, ref_dir: Path = REF_DIR) -> int:
+    return len(load_ref_records(locus_name, ref_dir=ref_dir))
 
 
 # ── Reference metadata sidecar (type material, voucher, provenance) ──────────
@@ -340,20 +351,80 @@ def _search_ncbi(db: str, base_query: str, max_results: int,
     return results
 
 
-def search_ncbi_protein(gene_name: str, organism: str,
+def build_entrez_query(terms, organism: str = "", field: str = "Title") -> str:
+    """
+    Build an Entrez query that ORs a set of synonym ``terms`` within ``field`` and ANDs
+    the organism. ``terms`` may be a single ``str`` or an iterable of ``str``.
+
+    Multi-word terms are wrapped in quotes so NCBI matches them as a phrase; without quotes
+    the field tag binds only to the *last* word and the earlier words silently fall back to
+    All Fields (one of the ways the old single-string query under-/over-matched). A single
+    term skips the surrounding parentheses. Terms are de-duplicated case-insensitively,
+    order-preserving.
+
+        build_entrez_query(["gapdh", "glyceraldehyde-3-phosphate dehydrogenase"], "Fungi")
+        -> '(gapdh[Title] OR "glyceraldehyde-3-phosphate dehydrogenase"[Title]) AND Fungi[Organism]'
+
+    Intentionally carries NO 'complete cds' / 'partial cds' constraint: fungal phylogenetic
+    markers are overwhelmingly deposited as *partial cds* barcode amplicons, so forcing
+    'complete cds' silently crushed recall. The relaxed BLAST path and Exonerate both handle
+    partial / intron-containing references. See DECISIONS.md D-011.
+    """
+    if isinstance(terms, str):
+        terms = [terms]
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in terms:
+        t = (t or "").strip()
+        key = t.lower()
+        if t and key not in seen:
+            seen.add(key)
+            uniq.append(t)
+    if not uniq:
+        raise ValueError("build_entrez_query: no non-empty search terms given")
+
+    def fmt(t: str) -> str:
+        return f'"{t}"[{field}]' if " " in t else f"{t}[{field}]"
+
+    joined = " OR ".join(fmt(t) for t in uniq)
+    if len(uniq) > 1:
+        joined = f"({joined})"
+    org = (organism or "").strip()
+    return f"{joined} AND {org}[Organism]" if org else joined
+
+
+def search_ncbi_protein(gene_name, organism: str,
                         max_results: int = 20, type_mode: str = "all") -> list[dict]:
     return _search_ncbi(
-        "protein", f"{gene_name}[Gene Name] AND {organism}[Organism]",
+        "protein", build_entrez_query(gene_name, organism, field="Gene Name"),
         max_results, type_mode,
     )
 
 
-def search_ncbi_nucleotide(gene_name: str, organism: str,
+def search_ncbi_nucleotide(gene_name, organism: str,
                            max_results: int = 20, type_mode: str = "all") -> list[dict]:
     return _search_ncbi(
-        "nucleotide", f"{gene_name}[Title] AND {organism}[Organism]",
+        "nucleotide", build_entrez_query(gene_name, organism, field="Title"),
         max_results, type_mode,
     )
+
+
+def ncbi_search_count(gene_name, organism: str, db: str = "nucleotide",
+                      field: str = "Title", type_mode: str = "all") -> int:
+    """
+    Total number of NCBI matches for a (synonym) query, without fetching the IDs — a cheap
+    esearch with ``retmax=0`` returning the ``Count``. Used by the References page to preview
+    how many references each locus would yield before fetching. ``type_mode="type_only"``
+    counts only sequence-from-type records; "prefer"/"all" return the full count.
+    """
+    _require_email()
+    query = build_entrez_query(gene_name, organism, field=field)
+    if type_mode == "type_only":
+        query = f"{query} AND {_TYPE_FILTER}"
+    handle = Entrez.esearch(db=db, term=query, retmax=0)
+    record = Entrez.read(handle)
+    handle.close()
+    return int(record.get("Count", 0))
 
 
 # ── NCBI fetch ───────────────────────────────────────────────────────────────
@@ -379,16 +450,18 @@ def fetch_nucleotide_by_accession(accession: str) -> Optional[SeqRecord]:
 def fetch_and_store(accessions: list[str], locus_name: str,
                     db: str = "protein",
                     custom_label: Optional[str] = None,
-                    query: str = "") -> tuple[int, int, list]:
+                    query: str = "",
+                    ref_dir: Path = REF_DIR) -> tuple[int, int, list]:
     """
     Fetch accessions, append sequences to the locus FASTA, and record per-accession
     metadata (organism / strain / voucher / type material) in the sidecar JSON.
-    ``query`` is stored for provenance. Returns (added, skipped, errors).
+    ``query`` is stored for provenance. ``ref_dir`` selects the reference library root
+    (per-project when passed; global by default — D-013). Returns (added, skipped, errors).
     """
     _require_email()
-    existing = accessions_in_library(locus_name)
-    fasta_path = locus_ref_fasta(locus_name)
-    meta = load_ref_meta(locus_name)
+    existing = accessions_in_library(locus_name, ref_dir=ref_dir)
+    fasta_path = locus_ref_fasta(locus_name, ref_dir=ref_dir)
+    meta = load_ref_meta(locus_name, ref_dir=ref_dir)
     added, skipped, errors = 0, 0, []
     with open(fasta_path, "a") as out_f:
         for acc in accessions:
@@ -410,13 +483,14 @@ def fetch_and_store(accessions: list[str], locus_name: str,
                 added += 1
             except Exception as e:
                 errors.append(f"{acc}: {e}")
-    save_ref_meta(locus_name, meta)
-    _log_fetch(locus_name, db, query, accessions, added, skipped)
+    save_ref_meta(locus_name, meta, ref_dir=ref_dir)
+    _log_fetch(locus_name, db, query, accessions, added, skipped, ref_dir=ref_dir)
     return added, skipped, errors
 
 
-def delete_from_library(locus_name: str, accession: str) -> bool:
-    fasta_path = locus_ref_fasta(locus_name)
+def delete_from_library(locus_name: str, accession: str,
+                        ref_dir: Path = REF_DIR) -> bool:
+    fasta_path = locus_ref_fasta(locus_name, ref_dir=ref_dir)
     if not os.path.exists(fasta_path):
         return False
     records = list(SeqIO.parse(fasta_path, "fasta"))
@@ -431,34 +505,67 @@ def delete_from_library(locus_name: str, accession: str) -> bool:
 
 # ── Locus catalogue ───────────────────────────────────────────────────────────
 # Standard fungal phylogenetic markers with practical NCBI search terms.
-# Protein-coding loci default to nucleotide (CDS) so blastn HSP-as-exon
-# extraction works naturally. Users can switch to protein for tblastn.
 #
-# This catalogue is genus-agnostic. Set organism in the UI per locus.
+# Each coding locus carries a canonical `gene` keyword plus `synonyms`: the curated set
+# of name variants this marker is deposited under (symbol + spelled-out name + common
+# abbreviations). `search_ncbi_nucleotide` / `_protein` OR these together (build_entrez_query)
+# so inconsistently-titled records are still recovered. NO entry forces 'complete cds' —
+# fungal markers are mostly *partial cds* barcode amplicons (D-011, supersedes the old
+# 'complete cds' terms). Set organism in the UI per locus. This catalogue is genus-agnostic.
 
 LOCUS_CATALOGUE: dict[str, dict] = {
     # rDNA — ITSx extracts from assemblies; fetch here for outgroup references
     "ITS":   {"db": "nucleotide", "gene": "internal transcribed spacer",
+               "synonyms": ["ITS1", "ITS2", "5.8S ribosomal RNA"],
                "note": "ITSx extracts from assemblies; fetch here for outgroup taxa"},
     "LSU":   {"db": "nucleotide", "gene": "28S large subunit ribosomal RNA",
+               "synonyms": ["28S ribosomal RNA", "LSU rRNA", "large subunit ribosomal RNA"],
                "note": "ITSx extracts from assemblies; fetch here for outgroup taxa"},
     "SSU":   {"db": "nucleotide", "gene": "18S small subunit ribosomal RNA",
+               "synonyms": ["18S ribosomal RNA", "SSU rRNA", "small subunit ribosomal RNA"],
                "note": "ITSx extracts from assemblies; fetch here for outgroup taxa"},
-    # Protein-coding — use CDS for blastn extraction
-    "TEF1":  {"db": "nucleotide", "gene": "tef1 complete cds",
-               "note": "Translation elongation factor 1-alpha. Use CDS-only refs."},
-    "RPB1":  {"db": "nucleotide", "gene": "rpb1 complete cds",
-               "note": "RNA pol II largest subunit. Use CDS-only refs."},
-    "RPB2":  {"db": "nucleotide", "gene": "rpb2 complete cds",
-               "note": "RNA pol II second largest subunit. Use CDS-only refs."},
-    "TUB2":  {"db": "nucleotide", "gene": "tub2 complete cds",
+    # Protein-coding — partial-CDS barcode amplicons are the norm and work fine here.
+    "TEF1":  {"db": "nucleotide", "gene": "tef1",
+               "synonyms": ["tef-1", "tef1-alpha", "translation elongation factor 1-alpha",
+                            "elongation factor 1-alpha", "EF-1alpha"],
+               "note": "Translation elongation factor 1-alpha."},
+    "RPB1":  {"db": "nucleotide", "gene": "rpb1",
+               "synonyms": ["RNA polymerase II largest subunit",
+                            "DNA-directed RNA polymerase II subunit RPB1"],
+               "note": "RNA pol II largest subunit."},
+    "RPB2":  {"db": "nucleotide", "gene": "rpb2",
+               "synonyms": ["RNA polymerase II second largest subunit",
+                            "DNA-directed RNA polymerase II subunit RPB2"],
+               "note": "RNA pol II second largest subunit."},
+    "TUB2":  {"db": "nucleotide", "gene": "tub2",
+               "synonyms": ["benA", "beta-tubulin", "beta tubulin", "btub"],
                "note": "Beta-tubulin. Has small exons — try 'blastn' task if exons are missed."},
-    "GAPDH": {"db": "nucleotide", "gene": "gapdh complete cds",
-               "note": "Glyceraldehyde-3-phosphate dehydrogenase. Use CDS-only refs."},
-    "CAL":   {"db": "nucleotide", "gene": "calmodulin complete cds",
-               "note": "Calmodulin. Use CDS-only refs."},
-    "ACT":   {"db": "nucleotide", "gene": "actin complete cds",
-               "note": "Actin. Use CDS-only refs."},
-    "HIS3":  {"db": "nucleotide", "gene": "histone h3 complete cds",
+    "GAPDH": {"db": "nucleotide", "gene": "gapdh",
+               "synonyms": ["gpd", "gpdh", "gpdA", "glyceraldehyde-3-phosphate dehydrogenase"],
+               "note": "Glyceraldehyde-3-phosphate dehydrogenase."},
+    "CAL":   {"db": "nucleotide", "gene": "calmodulin",
+               "synonyms": ["cmd", "cmdA", "CaM"],
+               "note": "Calmodulin."},
+    "ACT":   {"db": "nucleotide", "gene": "actin",
+               "synonyms": ["act1", "actA"],
+               "note": "Actin."},
+    "HIS3":  {"db": "nucleotide", "gene": "histone H3",
+               "synonyms": ["his3", "hH3"],
                "note": "Histone H3. Useful for fine-scale resolution in some groups."},
 }
+
+
+def locus_search_terms(locus_name: str, user_term: str = "") -> list[str]:
+    """
+    Ordered search terms for a locus: the user's typed keyword first (if any), then the
+    catalogue canonical `gene` and curated `synonyms`. De-duplication is left to
+    ``build_entrez_query``. Safe for unknown/custom loci (returns ``[user_term]`` or ``[]``).
+    """
+    cat = LOCUS_CATALOGUE.get(locus_name, {})
+    terms: list[str] = []
+    if user_term and user_term.strip():
+        terms.append(user_term.strip())
+    if cat.get("gene"):
+        terms.append(cat["gene"])
+    terms.extend(cat.get("synonyms", []))
+    return terms

@@ -38,6 +38,7 @@ import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import product
 from pathlib import Path
 from typing import Optional
 
@@ -214,6 +215,64 @@ PRIMER_CATALOGUE: dict[str, PrimerPair] = load_builtin_primers()
 LOCUS_PRIMER_MAP: dict[str, list[str]] = locus_primer_map(PRIMER_CATALOGUE)
 
 
+# ── Degenerate (IUPAC) primer expansion (D-009) ────────────────────────────────
+#
+# NCBI BLAST does NOT resolve IUPAC ambiguity codes (R, Y, M, W, N, …). A
+# degenerate base fails our primer search two ways: (1) seeding — blastn-short
+# only finds an alignment after an exact word match (word_size 7 here), so a
+# primer with no 7-bp run of plain ACGT seeds nothing and silently returns no
+# hits (e.g. fRPB2-5F, longest concrete run = 5); (2) scoring — a degenerate
+# base is counted as a mismatch even when biologically compatible (Y over a
+# template C scores identically to an incompatible R over C), so every
+# degenerate position eats the mismatch budget and the perc_identity floor.
+#
+# Fix: expand the primer into the full set of concrete oligos it represents and
+# search every one. Each variant then seeds and scores like an ordinary primer,
+# and the residual mismatch count reflects real biological mismatch against the
+# best-matching variant.
+
+IUPAC_CODES: dict[str, str] = {
+    "A": "A", "C": "C", "G": "G", "T": "T", "U": "T",
+    "R": "AG", "Y": "CT", "S": "CG", "W": "AT", "K": "GT", "M": "AC",
+    "B": "CGT", "D": "AGT", "H": "ACT", "V": "ACG", "N": "ACGT",
+}
+
+# Guard against pathologically degenerate input (e.g. a primer full of N's).
+# The most degenerate primer in the built-in catalogue (RPB1-Cr) expands to 384
+# oligos, so this cap leaves a wide margin while bounding memory/runtime.
+MAX_PRIMER_EXPANSION = 8192
+
+
+def degeneracy_count(seq: str) -> int:
+    """Number of concrete oligos a (possibly degenerate) primer represents."""
+    n = 1
+    for base in seq.strip().upper().replace(" ", ""):
+        n *= len(IUPAC_CODES.get(base, base))   # unknown char treated literally
+    return n
+
+
+def expand_degenerate_primer(
+    seq: str, max_expansion: int = MAX_PRIMER_EXPANSION
+) -> list[str]:
+    """
+    Expand a primer with IUPAC degenerate codes into all concrete ACGT oligos.
+
+    A non-degenerate primer returns ``[seq]`` (a single variant), so concrete and
+    degenerate primers take the same code path. Raises ``ValueError`` when the
+    primer is so degenerate it would expand past ``max_expansion`` — such a primer
+    is not specific enough to search reliably and should be redesigned.
+    """
+    s = seq.strip().upper().replace(" ", "")
+    count = degeneracy_count(s)
+    if count > max_expansion:
+        raise ValueError(
+            f"Primer '{seq}' expands to {count} variants (> cap {max_expansion}); "
+            f"too degenerate to search reliably."
+        )
+    options = [IUPAC_CODES.get(base, base) for base in s]
+    return ["".join(combo) for combo in product(*options)]
+
+
 # ── blastn-short runner ────────────────────────────────────────────────────────
 
 _BLAST_FIELDS = [
@@ -334,10 +393,19 @@ def find_primer_amplicons(
     # full edit distance so partial alignments cannot sneak through.
     perc_id = max(60.0, (min_len - max_mismatches - 1) / min_len * 100)
 
+    # Expand IUPAC degenerate bases into concrete oligos so BLAST can both seed
+    # and score them correctly (D-009). Each variant is searched separately and
+    # tagged FWD_* / REV_*; a non-degenerate primer yields a single variant.
+    fwd_variants = expand_degenerate_primer(primer_pair.fwd)
+    rev_variants = expand_degenerate_primer(primer_pair.rev)
+
     with tempfile.TemporaryDirectory() as tdir:
         primer_fa = os.path.join(tdir, "primers.fasta")
         with open(primer_fa, "w") as f:
-            f.write(f">FWD\n{primer_pair.fwd}\n>REV\n{primer_pair.rev}\n")
+            for i, v in enumerate(fwd_variants):
+                f.write(f">FWD_{i}\n{v}\n")
+            for i, v in enumerate(rev_variants):
+                f.write(f">REV_{i}\n{v}\n")
         hits = _run_blastn_short(
             primer_fa, assembly_fasta, perc_id, blastn_bin,
             manager=manager, module=module, action=action,
@@ -346,9 +414,10 @@ def find_primer_amplicons(
     fwd_by_contig: dict[str, list] = defaultdict(list)
     rev_by_contig: dict[str, list] = defaultdict(list)
     for h in hits:
-        if h["qseqid"] == "FWD" and _effective_mismatch(h, fwd_len) <= max_mismatches:
+        q = h["qseqid"]
+        if q.startswith("FWD") and _effective_mismatch(h, fwd_len) <= max_mismatches:
             fwd_by_contig[h["sseqid"]].append(h)
-        elif h["qseqid"] == "REV" and _effective_mismatch(h, rev_len) <= max_mismatches:
+        elif q.startswith("REV") and _effective_mismatch(h, rev_len) <= max_mismatches:
             rev_by_contig[h["sseqid"]].append(h)
 
     candidates: list[dict] = []
@@ -384,6 +453,16 @@ def find_primer_amplicons(
                     "fwd_hit":      fh,
                     "rev_hit":      rh,
                 })
+
+    # Multiple expanded oligos can map to the same physical binding site; collapse
+    # to one candidate per amplicon, keeping the lowest-edit-distance variant pairing.
+    best_by_key: dict[tuple, dict] = {}
+    for c in candidates:
+        key = (c["contig"], c["strand"], c["amp_start"], c["amp_end"])
+        cur = best_by_key.get(key)
+        if cur is None or c["total_edit"] < cur["total_edit"]:
+            best_by_key[key] = c
+    candidates = list(best_by_key.values())
 
     candidates.sort(key=lambda c: (c["total_edit"], c["amp_len"]))
     return candidates
@@ -463,6 +542,9 @@ def write_primer_extraction_log(
         f"[rev]           {primer_pair.rev_name or 'rev'}  5'-{primer_pair.rev}-3'",
         f"[size_window]   {primer_pair.min_amplicon}-{primer_pair.max_amplicon} bp",
         f"[max_mismatch]  {max_mismatches} (substitutions + unaligned bases, per primer)",
+        f"[degeneracy]    fwd={degeneracy_count(primer_pair.fwd)} variant(s), "
+        f"rev={degeneracy_count(primer_pair.rev)} variant(s) "
+        f"(IUPAC bases expanded for BLAST)",
         f"[source]        {primer_pair.source or 'unknown'}",
         f"[citation]      {primer_pair.citation or 'n/a'}",
         f"[reference]     {primer_pair.reference_url or 'n/a'}",
@@ -532,11 +614,19 @@ def run_primer_extraction(
     """
     action = f"primer_{locus_name}_{strain_id}"
     if candidates is None:
-        candidates = find_primer_amplicons(
-            assembly_fasta, primer_pair,
-            max_mismatches=max_mismatches, blastn_bin=blastn_bin,
-            manager=manager, action=action,
-        )
+        try:
+            candidates = find_primer_amplicons(
+                assembly_fasta, primer_pair,
+                max_mismatches=max_mismatches, blastn_bin=blastn_bin,
+                manager=manager, action=action,
+            )
+        except ValueError as exc:
+            status = f"Primer too degenerate to search: {exc}"
+            write_primer_extraction_log(
+                output_dir, strain_id, locus_name, primer_pair,
+                None, max_mismatches, 0, status,
+            )
+            return None, status
 
     if not candidates:
         status = (

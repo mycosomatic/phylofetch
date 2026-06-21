@@ -110,6 +110,30 @@
       "citation": "Liu YJ, Whelen S, Hall BD (1999) Phylogenetic relationships among ascomycetes: evidence from an RNA polymerase II subunit. Molecular Biology and Evolution 16: 1799-1808.",
       "reference_url": "https://doi.org/10.1093/oxfordjournals.molbev.a026092"
     },
+    "RPB1-Af/RPB1-Cr": {
+      "locus": "RPB1",
+      "fwd_name": "RPB1-Af",
+      "fwd": "GARTGYCCDGGDCAYTTYGG",
+      "rev_name": "RPB1-Cr",
+      "rev": "CCNGCDATNTCRTTRTCCATRTA",
+      "min_amplicon": 400,
+      "max_amplicon": 2000,
+      "source": "Stiller & Hall 1997 (RPB1-Af); Matheny et al. 2002 (RPB1-Cr)",
+      "citation": "Stiller JW, Hall BD (1997) The origin of red algae: implications for plastid evolution. PNAS 94: 4520-4525 (RPB1-Af, forward). Matheny PB, Liu YJ, Ammirati JF, Hall BD (2002) Using RPB1 sequences to improve phylogenetic inference among mushrooms (Inocybe, Agaricales). American Journal of Botany 89: 688-698 (RPB1-Cr, reverse). Outermost fwd/rev of the Matheny-lab RPB1 set (A-C region); in-silico amplicon window deliberately widened beyond the wet-lab product to span the full genomic region including introns.",
+      "reference_url": "https://wordpress.clarku.edu/polypeet/datasets/primer-information/"
+    },
+    "fRPB2-5F/bRPB2-11R1": {
+      "locus": "RPB2",
+      "fwd_name": "fRPB2-5F",
+      "fwd": "GAYGAYMGWGATCAYTTYGG",
+      "rev_name": "bRPB2-11R1",
+      "rev": "TGGATYTTGTCRTCCACCAT",
+      "min_amplicon": 1200,
+      "max_amplicon": 4000,
+      "source": "Liu et al. 1999 (fRPB2-5F); Matheny et al. 2007 (bRPB2-11R1)",
+      "citation": "Liu YJ, Whelen S, Hall BD (1999) Phylogenetic relationships among ascomycetes: evidence from an RNA polymerase II subunit. Molecular Biology and Evolution 16: 1799-1808 (fRPB2-5F, forward; domain 5). Matheny PB, Wang Z, Binder M, et al. (2007) Contributions of rpb2 and tef1 to the phylogeny of mushrooms and allies (Basidiomycota, Fungi). Molecular Phylogenetics and Evolution 43: 430-451 (bRPB2-11R1, reverse; domain 11). Outermost fwd (domain 5) + rev (domain 11) of the Matheny-lab RPB2 set, spanning the full RPB2 region; in-silico amplicon window deliberately widened beyond the wet-lab nested products including introns.",
+      "reference_url": "https://wordpress.clarku.edu/polypeet/datasets/primer-information/"
+    },
     "BT2a/BT2b": {
       "locus": "TUB2",
       "fwd_name": "BT2a",

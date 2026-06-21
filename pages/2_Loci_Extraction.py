@@ -34,12 +34,14 @@ from phylofetch.itsx_utils import ITSX_SUFFIXES, run_itsx
 from phylofetch.ncbi_utils import (
     LOCUS_CATALOGUE,
     accessions_in_library,
+    build_entrez_query,
     count_refs,
     delete_from_library,
     fetch_and_store,
     load_ref_meta,
     load_ref_records,
     locus_ref_fasta,
+    locus_search_terms,
     search_ncbi_nucleotide,
     search_ncbi_protein,
     set_email,
@@ -189,7 +191,8 @@ with tab_refs:
     if n_refs > 0:
         st.caption(
             "🧫 tblastn will be used." if ref_type == "protein"
-            else "🧬 blastn will be used. Best with CDS-only references (no introns)."
+            else "🧬 blastn will be used. Partial-CDS barcode amplicons work fine as refs; "
+                 "Exonerate (frame-safe mode) resolves any introns they carry."
         )
 
     st.markdown("---")
@@ -205,9 +208,30 @@ with tab_refs:
             db_choice = st.selectbox("Database", ["nucleotide", "protein"],
                                      index=0 if db_type == "nucleotide" else 1)
 
+        # Synonym OR-groups: most fungal markers are deposited under several names
+        # (gpd / gpdh / glyceraldehyde-3-phosphate dehydrogenase …). OR them in to lift
+        # recall; the user can fall back to just their keyword. (D-011)
+        syns = cat.get("synonyms", [])
+        include_syns = False
+        if syns:
+            include_syns = st.checkbox(
+                f"Also search {len(syns)} known synonym(s) for {locus_name}", value=True,
+                help="OR-in curated name variants for this marker so inconsistently-titled "
+                     "records are still found. Uncheck to search only your keyword.",
+            )
+        search_terms = [gene_query] + (syns if include_syns else [])
+        ent_field = "Gene Name" if db_choice == "protein" else "Title"
+        try:
+            resolved_query = build_entrez_query(search_terms, org_query, field=ent_field)
+        except ValueError:
+            resolved_query = ""
+
         if db_choice == "nucleotide":
-            st.caption("💡 Search for 'complete cds' entries — these are CDS sequences. "
-                       "Avoid PCR amplicons that include introns.")
+            st.caption("💡 Partial-CDS barcode amplicons are the norm for fungal markers and "
+                       "work fine here; complete-CDS refs are optional. Exonerate resolves "
+                       "introns, and the relaxed BLAST path expects genomic amplicons.")
+        if resolved_query:
+            st.caption(f"🔎 Entrez query: `{resolved_query}`")
 
         max_hits = st.slider("Max results", 5, 50, 20)
 
@@ -233,7 +257,7 @@ with tab_refs:
                 with st.spinner(f"Searching NCBI {db_choice}…"):
                     try:
                         fn = search_ncbi_protein if db_choice == "protein" else search_ncbi_nucleotide
-                        hits = fn(gene_query, org_query, max_results=max_hits, type_mode=type_mode)
+                        hits = fn(search_terms, org_query, max_results=max_hits, type_mode=type_mode)
                         st.session_state[f"hits_{locus_name}"] = hits
                         st.session_state[f"searched_{locus_name}"] = True
                     except Exception as e:
@@ -246,9 +270,10 @@ with tab_refs:
 
         if searched and not hits:
             st.warning(
-                f"0 results for `{gene_query}` in `{org_query}` ({db_choice}). "
-                "Try a shorter search term — NCBI [Title] requires every word to appear. "
-                "E.g. 'tef1 complete cds' instead of the full gene name."
+                f"0 results for `{resolved_query or gene_query}` ({db_choice}). "
+                "Try a broader organism (e.g. the family or `Fungi`), a shorter keyword, or "
+                "leave synonyms on. Quoted multi-word terms must appear verbatim in the "
+                f"{'gene name' if db_choice == 'protein' else 'title'}."
             )
 
         if hits:
@@ -295,7 +320,7 @@ with tab_refs:
                             added, skipped, errors = fetch_and_store(
                                 to_add, locus_name, db=db_choice,
                                 custom_label=custom_label if use_label and custom_label else None,
-                                query=f"{gene_query} AND {org_query} [{db_choice}, type_mode={type_mode}]",
+                                query=f"{resolved_query} [{db_choice}, type_mode={type_mode}]",
                             )
                         st.success(f"Added: {added} · Already present: {skipped}")
                         for e in errors:
@@ -675,11 +700,15 @@ with tab_run:
                     sprog = st.progress(0)
                     for i, (s, l) in enumerate(jobs, 1):
                         asm = st.session_state.assemblies[s]["assembly_path"]
-                        scan[f"{s}|{l}"] = find_primer_amplicons(
-                            asm, primer_assignments[l],
-                            max_mismatches=max_mm, blastn_bin=blastn_bin,
-                            manager=scan_mgr, action=f"primer_scan_{l}_{s}",
-                        )
+                        try:
+                            scan[f"{s}|{l}"] = find_primer_amplicons(
+                                asm, primer_assignments[l],
+                                max_mismatches=max_mm, blastn_bin=blastn_bin,
+                                manager=scan_mgr, action=f"primer_scan_{l}_{s}",
+                            )
+                        except ValueError as exc:
+                            scan[f"{s}|{l}"] = []
+                            st.warning(f"`{s}` · {l}: {exc}")
                         sprog.progress(i / max(len(jobs), 1))
                     st.session_state["primer_scan"] = scan
 

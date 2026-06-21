@@ -32,11 +32,25 @@ DEFAULT_PROJECT_DIR = DEFAULT_PROJECTS_ROOT / "default"
 
 PROJECT_SUBDIRS = ("metadata", "runs", "results", "scratch", "logs")
 
+# Project-manifest schema (metadata/project_manifest.json). Bumped to 2 for RM-007/D-012 to
+# add a project-level default taxon and a workflow/step-state block. Older (v1) manifests are
+# read tolerantly — load_project_manifest() fills the new keys in memory and the next save
+# upgrades the file on disk. See DECISIONS.md D-012.
+PROJECT_MANIFEST_SCHEMA_VERSION = 2
+
+# Ordered extraction steps the Workflow page chains, and the status vocabulary each may hold.
+WORKFLOW_STEPS = ("references", "rDNA", "coding", "primers", "combine")
+STEP_STATUSES = ("pending", "running", "done", "error", "skipped")
+
+# How an assembly's taxon was assigned (D-012): typed by the user, or picked from the
+# ITS-extraction BLAST result. Empty string = unset.
+TAXON_SOURCES = ("manual", "its_blast")
+
 # Columns for the human-readable assembly manifest (metadata/assembly_manifest.tsv).
 ASSEMBLY_MANIFEST_FIELDS = [
-    "strain_id", "assembly_path", "assembler", "num_contigs", "n50",
-    "total_length_mb", "gc_percent", "quast_report", "busco_dir",
-    "busco_completeness", "registered_at",
+    "strain_id", "taxon", "taxon_source", "assembly_path", "assembler",
+    "num_contigs", "n50", "total_length_mb", "gc_percent", "quast_report",
+    "busco_dir", "busco_completeness", "registered_at",
 ]
 
 
@@ -86,6 +100,49 @@ def safe_slug(text: str, fallback: str = "item") -> str:
     return slug or fallback
 
 
+def _default_workflow() -> dict:
+    """Fresh workflow/step-state block for a project manifest (D-012)."""
+    return {
+        "strategy": None,
+        "loci": [],
+        "steps": {
+            step: {"status": "pending", "updated_at": "", "outputs": {}, "notes": ""}
+            for step in WORKFLOW_STEPS
+        },
+    }
+
+
+def _ensure_manifest_defaults(manifest: Mapping[str, Any] | None) -> dict:
+    """
+    Return a project-manifest dict with every current-schema key present, without
+    discarding existing values. Tolerant of v1 manifests (no default_taxon / workflow):
+    missing keys are filled in memory, and the canonical workflow steps are guaranteed to
+    exist while any extra/unknown steps already present are preserved.
+    """
+    m = dict(manifest or {})
+    m["schema_version"] = PROJECT_MANIFEST_SCHEMA_VERSION
+    m.setdefault("default_taxon", "")
+    wf = m.get("workflow")
+    if not isinstance(wf, dict):
+        wf = _default_workflow()
+    else:
+        wf.setdefault("strategy", None)
+        wf.setdefault("loci", [])
+        steps = wf.get("steps")
+        steps = dict(steps) if isinstance(steps, dict) else {}
+        for step in WORKFLOW_STEPS:
+            s = steps.get(step)
+            s = dict(s) if isinstance(s, dict) else {}
+            s.setdefault("status", "pending")
+            s.setdefault("updated_at", "")
+            s.setdefault("outputs", {})
+            s.setdefault("notes", "")
+            steps[step] = s
+        wf["steps"] = steps
+    m["workflow"] = wf
+    return m
+
+
 def init_project(project_dir: str | Path) -> Path:
     root = Path(project_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -94,13 +151,12 @@ def init_project(project_dir: str | Path) -> Path:
 
     manifest = root / "metadata" / "project_manifest.json"
     if not manifest.exists():
-        save_json(manifest, {
+        save_json(manifest, _ensure_manifest_defaults({
             "name": root.name,
             "created_at": now_iso(),
             "project_dir": str(root),
-            "schema_version": 1,
             "notes": "Created by phylofetch.",
-        })
+        }))
 
     history = root / "metadata" / "command_history.tsv"
     if not history.exists():
@@ -260,6 +316,8 @@ def _assembly_record_to_row(strain_id: str, rec: Mapping[str, Any]) -> dict[str,
 
     return {
         "strain_id":          strain_id,
+        "taxon":              rec.get("taxon", ""),
+        "taxon_source":       rec.get("taxon_source", ""),
         "assembly_path":      pick("assembly_path"),
         "assembler":          pick("assembler"),
         "num_contigs":        pick("num_contigs"),
@@ -305,7 +363,11 @@ def _migrate_assembly_record(sid: str, record: dict) -> dict:
     ``assembly_utils.get_assembly_stats()`` output.
     """
     if isinstance(record.get("stats"), dict):
-        return record
+        rec = dict(record)
+        rec.setdefault("strain_id", sid)
+        rec.setdefault("taxon", "")
+        rec.setdefault("taxon_source", "")
+        return rec
     stats = {k: v for k, v in record.items() if k in _FLAT_STAT_KEYS}
     clean = {k: v for k, v in record.items() if k not in _FLAT_STAT_KEYS}
     if "gc_percent" in stats and "mean_gc" not in stats:
@@ -314,6 +376,8 @@ def _migrate_assembly_record(sid: str, record: dict) -> dict:
         stats.pop("gc_percent", None)
     clean["stats"] = stats
     clean.setdefault("strain_id", sid)
+    clean.setdefault("taxon", "")
+    clean.setdefault("taxon_source", "")
     return clean
 
 
@@ -345,6 +409,114 @@ def list_projects(projects_root: str | Path | None = None) -> list[dict]:
             "n_assemblies": len(registry),
         })
     return projects
+
+
+# ── Project manifest: taxonomy + workflow state (D-012) ──────────────────────
+#
+# The project manifest (metadata/project_manifest.json) is the chaining backbone for the
+# component-page workflow: it carries the project-level default taxon and a workflow block
+# (chosen strategy, selected loci, per-step status/outputs). Per-assembly taxon overrides
+# live on the assembly records in the registry. Reads tolerate v1 manifests; writes upgrade
+# the schema. See PLANNING.md RM-007.
+
+def _project_manifest_path(project_dir: str | Path) -> Path:
+    return Path(project_dir).expanduser().resolve() / "metadata" / "project_manifest.json"
+
+
+def load_project_manifest(project_dir: str | Path) -> dict:
+    """Load a project manifest with all current-schema keys filled (v1-tolerant)."""
+    return _ensure_manifest_defaults(load_json(_project_manifest_path(project_dir), {}))
+
+
+def save_project_manifest(project_dir: str | Path, manifest: Mapping[str, Any]) -> Path:
+    """Persist a project manifest (schema kept current). Returns the manifest path."""
+    init_project(project_dir)
+    path = _project_manifest_path(project_dir)
+    save_json(path, _ensure_manifest_defaults(manifest))
+    return path
+
+
+def set_default_taxon(project_dir: str | Path, taxon: str) -> dict:
+    """Set the project-level default taxon; returns the updated manifest."""
+    m = load_project_manifest(project_dir)
+    m["default_taxon"] = (taxon or "").strip()
+    save_project_manifest(project_dir, m)
+    return m
+
+
+def get_workflow(project_dir: str | Path) -> dict:
+    """Return the workflow/step-state block of the project manifest."""
+    return load_project_manifest(project_dir)["workflow"]
+
+
+def set_workflow_strategy(project_dir: str | Path, strategy: str | None) -> dict:
+    """Set the chosen strategy name (or None to clear); returns the updated manifest."""
+    m = load_project_manifest(project_dir)
+    m["workflow"]["strategy"] = strategy
+    save_project_manifest(project_dir, m)
+    return m
+
+
+def set_workflow_loci(project_dir: str | Path, loci: Sequence[str]) -> dict:
+    """Set the selected loci list; returns the updated manifest."""
+    m = load_project_manifest(project_dir)
+    m["workflow"]["loci"] = list(loci)
+    save_project_manifest(project_dir, m)
+    return m
+
+
+def update_step(project_dir: str | Path, step: str, *,
+                status: str | None = None,
+                outputs: Mapping[str, Any] | None = None,
+                notes: str | None = None) -> dict:
+    """
+    Update one workflow step's state. ``status`` (if given) must be in STEP_STATUSES;
+    ``outputs`` is merged into the step's existing outputs; ``notes`` replaces. Always
+    stamps ``updated_at``. Returns the updated manifest. Raises ValueError on an unknown
+    step or invalid status.
+    """
+    if step not in WORKFLOW_STEPS:
+        raise ValueError(f"unknown workflow step {step!r}; expected one of {WORKFLOW_STEPS}")
+    if status is not None and status not in STEP_STATUSES:
+        raise ValueError(f"invalid status {status!r}; expected one of {STEP_STATUSES}")
+    m = load_project_manifest(project_dir)
+    s = m["workflow"]["steps"][step]
+    if status is not None:
+        s["status"] = status
+    if outputs:
+        merged = dict(s.get("outputs") or {})
+        merged.update(outputs)
+        s["outputs"] = merged
+    if notes is not None:
+        s["notes"] = notes
+    s["updated_at"] = now_iso()
+    save_project_manifest(project_dir, m)
+    return m
+
+
+# ── Per-assembly taxonomy ────────────────────────────────────────────────────
+
+def effective_taxon(record: Mapping[str, Any], default_taxon: str = "") -> str:
+    """The assembly's own taxon if set, else the project default (both stripped)."""
+    return (record.get("taxon") or "").strip() or (default_taxon or "").strip()
+
+
+def set_assembly_taxon(project_dir: str | Path, strain_id: str, taxon: str,
+                       source: str = "manual") -> dict:
+    """
+    Set ``taxon`` + ``taxon_source`` on a registered assembly and persist the registry.
+    Returns the updated registry. Raises KeyError if the strain isn't registered and
+    ValueError on an unrecognised source.
+    """
+    if source not in TAXON_SOURCES:
+        raise ValueError(f"invalid taxon source {source!r}; expected one of {TAXON_SOURCES}")
+    registry = load_assembly_registry(project_dir)
+    if strain_id not in registry:
+        raise KeyError(f"assembly {strain_id!r} is not registered in this project")
+    registry[strain_id]["taxon"] = (taxon or "").strip()
+    registry[strain_id]["taxon_source"] = source
+    save_assembly_registry(project_dir, registry)
+    return registry
 
 
 class RunManager:

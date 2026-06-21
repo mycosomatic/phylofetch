@@ -25,10 +25,15 @@ from phylofetch.busco_utils import scan_busco_run
 from phylofetch.config import load_config, save_config
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
+    RunManager,
+    effective_taxon,
     load_assembly_registry,
+    load_project_manifest,
     now_iso,
     save_assembly_registry,
+    set_default_taxon,
 )
+from phylofetch.taxon_id_utils import identify_taxon_from_assembly
 
 # ── Page setup ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -95,11 +100,43 @@ def _build_record(sid: str, path: str, busco_dir: str = "",
     return {
         "strain_id":     sid,
         "assembly_path": path,
+        "taxon":         "",
+        "taxon_source":  "",
         "busco_dir":     busco_dir,
         "busco":         _parse_busco_dir(busco_dir),
         "stats":         stats,
         "registered_at": now_iso(),
     }
+
+
+# ── Project-level default taxon (D-012 / RM-007 step 2) ───────────────────────
+# The closest taxon for the project as a whole: the fallback for any assembly without
+# its own override, and the default organism for NCBI reference searches. Stored in the
+# project manifest, not the assembly registry.
+_proj = _active_project()
+default_taxon = load_project_manifest(_proj).get("default_taxon", "")
+with st.expander("🧬 Project taxonomy (default taxon)", expanded=not default_taxon):
+    cda, cdb = st.columns([3, 1])
+    with cda:
+        _new_default = st.text_input(
+            "Project default taxon",
+            value=default_taxon,
+            placeholder="e.g. Alternaria — closest taxon for the whole project",
+            help="Fallback taxon for every assembly without an override, and the default "
+                 "organism for NCBI reference searches. Override individual assemblies in "
+                 "the Registered Assemblies tab.",
+            key="default_taxon_input",
+        )
+    with cdb:
+        st.write(""); st.write("")
+        if st.button("💾 Save default taxon"):
+            set_default_taxon(_proj, _new_default)
+            st.success("Saved.")
+            st.rerun()
+    if default_taxon:
+        st.caption(f"Current project default: **{default_taxon}**")
+    else:
+        st.caption("No project default set — give assemblies their own taxon, or set one here.")
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -414,9 +451,14 @@ with tab_list:
             s = d.get("stats", {}) or {}
             b = d.get("busco", {}) or {}
             cp = b.get("completeness_pct")
+            own_tax = (d.get("taxon") or "").strip()
+            tax_src = (d.get("taxon_source", "") if own_tax
+                       else ("default" if default_taxon else ""))
             rows.append(
                 {
                     "Strain ID":   sid,
+                    "Taxon":       effective_taxon(d, default_taxon) or "—",
+                    "Source":      tax_src or "—",
                     "Total (Mb)":  s.get("total_length_mb", "—"),
                     "Contigs":     s.get("num_contigs", "—"),
                     "N50 (bp)":    s.get("n50", "—"),
@@ -472,6 +514,79 @@ with tab_list:
                     else:
                         st.success("BUSCO directory saved.")
                     st.rerun()
+
+            with st.form(f"taxon_{selected}"):
+                _own = (d.get("taxon") or "").strip()
+                new_taxon = st.text_input(
+                    "Per-assembly taxon override",
+                    value=_own,
+                    placeholder=(f"blank = use project default ('{default_taxon}')"
+                                 if default_taxon else "closest taxon for this assembly"),
+                    help="Overrides the project default for this assembly only. "
+                         "Leave blank to inherit the project default.",
+                )
+                if st.form_submit_button("💾 Save taxon"):
+                    nt = new_taxon.strip()
+                    st.session_state.assemblies[selected]["taxon"] = nt
+                    st.session_state.assemblies[selected]["taxon_source"] = "manual" if nt else ""
+                    _save()
+                    st.success("Taxon saved." if nt else "Override cleared — using project default.")
+                    st.rerun()
+            _eff = effective_taxon(d, default_taxon)
+            if (d.get("taxon") or "").strip():
+                st.caption(f"Effective taxon: **{_eff or '—'}** · source: {d.get('taxon_source', 'manual')}")
+            elif default_taxon:
+                st.caption(f"Effective taxon: **{_eff}** · inherited from project default")
+            else:
+                st.caption("No taxon set for this assembly or project.")
+
+            with st.expander("🔬 Identify taxon by ITS (NCBI remote BLAST)"):
+                st.caption(
+                    "Runs ITSx to pull the ITS region from this assembly, then BLASTs it "
+                    "against NCBI `nt` remotely and suggests the closest organism. Needs "
+                    "internet and the ITSx + blastn binaries; can take several minutes."
+                )
+                restrict_fungi = st.checkbox(
+                    "Restrict to fungi", value=True, key=f"itsfungi_{selected}",
+                    help="Adds fungi[ORGN] to the remote search — faster and more relevant.",
+                )
+                if st.button("🔬 Run ITS identification", key=f"itsid_run_{selected}"):
+                    rm = RunManager(_proj)
+                    work = str(Path(_proj) / "scratch" / "itsx_id" / selected)
+                    with st.spinner("ITSx + remote NCBI BLAST… (this can take several minutes)"):
+                        st.session_state[f"itsid_res_{selected}"] = identify_taxon_from_assembly(
+                            d.get("assembly_path", ""), work, selected, run_manager=rm,
+                            entrez_query="fungi[ORGN]" if restrict_fungi else "",
+                        )
+                res = st.session_state.get(f"itsid_res_{selected}")
+                if res:
+                    if not res.get("ok"):
+                        st.error(f"{res.get('stage', 'error')}: {res.get('error', 'failed')}")
+                        if res.get("itsx_log"):
+                            with st.expander("ITSx log"):
+                                st.code(res["itsx_log"])
+                    elif not res.get("hits"):
+                        st.warning("No organism hits returned by remote BLAST.")
+                    else:
+                        st.success(
+                            f"ITS region **{res['its_region']}** "
+                            f"({res.get('its_length', '?')} bp) · {len(res['hits'])} candidate taxa"
+                        )
+                        dfh = pd.DataFrame([
+                            {"Organism": h["organism"], "% ident": h["pident"],
+                             "Accession": h["accession"], "Bitscore": h["bitscore"]}
+                            for h in res["hits"]
+                        ])
+                        st.dataframe(dfh, width="stretch", hide_index=True)
+                        orgs = [h["organism"] for h in res["hits"]]
+                        pick = st.selectbox("Set taxon from a hit", orgs,
+                                            key=f"itspick_{selected}")
+                        if st.button("✅ Use this taxon", key=f"ituse_{selected}"):
+                            st.session_state.assemblies[selected]["taxon"] = pick
+                            st.session_state.assemblies[selected]["taxon_source"] = "its_blast"
+                            _save()
+                            st.success(f"Set taxon to '{pick}' (source: its_blast).")
+                            st.rerun()
 
             mc1, mc2 = st.columns(2)
             with mc1:

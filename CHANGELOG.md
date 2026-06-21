@@ -3,8 +3,110 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-20
+
+- **NCBI References component page (D-012/D-013 / RM-007 step 4b).** New standalone
+  `pages/2_NCBI_References.py`: tick loci as **checkboxes** → **preview NCBI hit counts** for
+  the project taxon → **fetch** top-N (type-preferred) into the **per-project** library
+  (`<project>/references`), with a **review/cull** table. The search organism **defaults to the
+  project taxon** from the manifest (editable; hint to broaden species→genus→family). Fetch
+  provenance is recorded in the manifest (`workflow.steps.references`). New
+  `ncbi_utils.ncbi_search_count` (cheap `esearch retmax=0`) backs the preview. Runs alongside
+  the old `2_Loci_Extraction` page during the transition (sidebar shows both, by design).
+  Tests: 2 new (mocked `ncbi_search_count`) → **208 passing**; page render verified headless
+  via `AppTest` on the real project (taxon guard + preview/fetch controls appear correctly).
+- **Per-project reference libraries — data layer (D-013 / RM-007 step 4a).** `ncbi_utils.py`:
+  the reference functions (`locus_ref_fasta`, `list_loci`, `load_ref_records`,
+  `accessions_in_library`, `count_refs`, `fetch_and_store`, `delete_from_library`) now take a
+  `ref_dir` parameter defaulting to the global library, plus a new
+  `project_ref_dir(project_dir)` → `<project>/references`. Backward-compatible (the global
+  default is unchanged); per-project storage takes effect once the References component page
+  passes the project-scoped dir (step 4b). Tests: 6 new (`TestPerProjectRefDir`, incl.
+  two-project isolation + default-is-global guard). **206 passing** (was 200).
+- **ITS-based provisional taxon ID (D-014 / RM-007 step 3).** New
+  `src/phylofetch/taxon_id_utils.py` and an "Identify taxon by ITS (NCBI remote BLAST)" control
+  in the Assembly Manager: ITSx pulls the ITS region, `blastn -remote -db nt` (optionally
+  fungi-restricted) finds the closest organisms, and the user picks one → sets the assembly
+  taxon with `taxon_source="its_blast"`.
+  - **Organism resolution finding:** `sscinames` is resolved from a *local* BLAST taxdb even
+    under `-remote`, so it returns `N/A`/`N/A;N/A` without taxdb installed. The organism is
+    therefore derived from the subject title (`stitle`), preferring a real `sscinames` when
+    present; ";"-joined `N/A` handled. Avoids forcing a large taxdb download.
+  - Remote call routed through RunManager (provenance); pure command-build / parse / rank split
+    out for testing. ITSx absence and BLAST errors surface cleanly in the UI.
+  - Tests: 15 network-free (`tests/test_taxon_id_utils.py`); **live-verified** against NCBI
+    (Alternaria ITS → *Alternaria alternata* 100 %). **200 passing** (was 185).
+- **Assembly taxonomy UI (RM-007 step 2).** `pages/1_Assembly_Manager.py`: a project-level
+  **default taxon** control (manifest-backed via `set_default_taxon`, shown in an expander that
+  opens until set) and a **per-assembly taxon override** in the Manage-assembly section
+  (session-mutate + existing `_save()` path), plus **Taxon / Source** columns in the
+  registered-assemblies summary showing the effective taxon (`effective_taxon`) and whether it
+  is a manual override or inherited from the project default. New records carry
+  `taxon`/`taxon_source`. No new `src` logic — reuses the increment-1 manifest helpers.
+  Verified end-to-end on a temp project (default + override round-trip, incl. the TSV);
+  185 tests still passing (UI not unit-tested).
+- **Workflow architecture — manifest schema (D-012 / RM-007 step 1).** First increment of the
+  component-page + manifest-chained workflow; pure data layer, no UI yet.
+  - `project_manager.py`: project manifest bumped to **schema v2** — adds a project-level
+    `default_taxon` and a `workflow` block (`strategy`, `loci`, and per-step `steps` carrying
+    `status`/`updated_at`/`outputs`/`notes` over `references`/`rDNA`/`coding`/`primers`/`combine`).
+    v1 manifests are read tolerantly (`_ensure_manifest_defaults` fills missing keys in memory;
+    a write upgrades the file and preserves any unknown/extra steps).
+  - Per-assembly **taxonomy**: `taxon` + `taxon_source` (`manual` | `its_blast`) on registry
+    records (backfilled on load/migrate), plus new `assembly_manifest.tsv` columns.
+  - New helpers: `load_project_manifest` / `save_project_manifest`, `set_default_taxon`,
+    `get_workflow`, `set_workflow_strategy`, `set_workflow_loci`, `update_step`,
+    `effective_taxon`, `set_assembly_taxon`. Verified read-tolerant against existing on-disk
+    projects (no files modified on load).
+  - Tests: 16 new in `tests/test_project_manager.py` (schema/upgrade, workflow-state helpers,
+    taxonomy). **185 passing** (was 169).
+- **Synonym OR-group NCBI search; dropped forced "complete cds" (D-011, addresses RM-001
+  risk-register item).** Reference fetching returned ≈0 hits whenever `"complete cds"` was in
+  the query, because fungal markers are deposited mostly as *partial-cds* barcode amplicons.
+  - `ncbi_utils.py`: removed the hardcoded `"complete cds"` from every coding-locus
+    `LOCUS_CATALOGUE` entry; each coding locus now carries a canonical `gene` keyword plus a
+    curated `synonyms` list (TEF1/RPB1/RPB2/TUB2/GAPDH/CAL/ACT/HIS3 + rDNA variants). New
+    `build_entrez_query(terms, organism, field)` ORs the terms within the field, phrase-quotes
+    multi-word terms, dedupes case-insensitively, and ANDs the organism. `search_ncbi_nucleotide`
+    / `search_ncbi_protein` now accept a `str` **or** `list[str]`; new `locus_search_terms`
+    helper assembles `[user keyword] + gene + synonyms`. Notes corrected ("Use CDS-only refs"
+    removed).
+  - `pages/2_Loci_Extraction.py`: per-locus **"Also search N known synonym(s)"** checkbox
+    (default on), the **resolved Entrez query shown verbatim** under the search box, fetch
+    provenance now stores that resolved query, and the misleading "search 'complete cds' /
+    avoid PCR amplicons / best with CDS-only references" captions corrected globally
+    (partial-CDS amplicons are fine; Exonerate resolves introns; relaxed BLAST expects
+    amplicons).
+  - Tests: `tests/test_ncbi_utils.py` — `TestBuildEntrezQuery`, `TestLocusSearchTerms`,
+    `TestCatalogueIsBarcodeFriendly` (regression-guards that no catalogue term forces
+    'complete cds' and every coding locus has synonyms). **169 passing** (was 155).
+
 ## 2026-06-19
 
+- **Degenerate-primer handling for in-silico PCR (D-009) + Matheny RPB1/RPB2 primers
+  (D-010).** Established empirically (blastn 2.14.1) that NCBI BLAST does *not* resolve IUPAC
+  degenerate codes: a degenerate primer both fails to **seed** (`blastn-short` needs an exact
+  7-bp word; e.g. `fRPB2-5F`'s longest concrete run is 5 → silently 0 hits) and is **mis-scored**
+  (a biologically-compatible `Y`-over-`C` counts as a mismatch, same as an incompatible
+  `R`-over-`C`), so degenerate barcodes were silently under-/non-recovered.
+  - `primer_utils.py`: new `expand_degenerate_primer` / `degeneracy_count` /
+    `IUPAC_CODES` / `MAX_PRIMER_EXPANSION`. `find_primer_amplicons` now expands fwd+rev into
+    concrete oligos, searches each as `FWD_*`/`REV_*` through the existing `blastn-short` +
+    RunManager path, buckets by prefix, and **collapses variant duplicates** to one candidate
+    per amplicon (lowest edit-distance kept). Over-cap (>8192 variants) raises `ValueError`;
+    `run_primer_extraction` reports it as a "primer too degenerate" status and the per-locus
+    log records fwd/rev variant counts. Fixes the already-shipped degenerate primers too.
+  - `pages/2_Loci_Extraction.py`: the binding-site preview scan catches the over-cap case
+    and shows a per-strain `st.warning` instead of crashing.
+  - `data/primers.json`: **two new cited pairs** — RPB1 `RPB1-Af`/`RPB1-Cr` (Stiller & Hall
+    1997 + Matheny et al. 2002; 400–2000 bp) and RPB2 `fRPB2-5F`/`bRPB2-11R1` (Liu et al.
+    1999 + Matheny et al. 2007; 1200–4000 bp), pairing the outermost fwd/rev per gene for the
+    largest in-silico span (not bound by wet-lab PCR). Fills the previously primer-less
+    `RPB1` locus. Catalogue now **16 pairs**.
+  - Tests: `tests/test_primer_utils.py` — expansion correctness, FWD/REV bucketing + dedup,
+    over-cap status, the two new pairs, and a `blastn`-guarded end-to-end proof that the
+    degenerate RPB2 pair now finds an amplicon the raw primer cannot seed. **155 passing**
+    (was 139).
 - **Custom-locus primers in PCR Primer mode (`pages/2_Loci_Extraction.py`).** Added an
   "➕ Custom locus" section so in-silico PCR can target a locus not in the catalogue
   (name + fwd/rev + size window; IUPAC degenerate codes allowed), optionally saved to the
