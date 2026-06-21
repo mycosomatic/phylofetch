@@ -5,6 +5,20 @@
 
 ## 2026-06-20
 
+- **Decomposition complete — Workflow orchestrator + monolith retired (D-016 / RM-007 step 5).**
+  - New `pages/6_Workflow.py`: a named-strategy selector ("Fungal barcodes (ITSx + Exonerate)",
+    "Primers only", "Everything") over a **manifest-driven checklist** that shows each step's live
+    status (`workflow.steps`) and links to its component page (`st.page_link`, with a caption
+    fallback so it never crashes when the page registry is unavailable).
+  - **Relaxed BLAST-amplicon strategy ported** into `pages/4_Exonerate.py` as a mode toggle
+    ("Exonerate (frame-safe)" | "BLAST amplicon (relaxed, genomic)", `require_complete_cds=False`)
+    — no capability lost on retirement.
+  - **Retired the monolithic `pages/2_Loci_Extraction.py`** (logic lives in `src/`); renumbered
+    to the final layout: 2 NCBI References · 3 ITSx (rDNA) · 4 Exonerate · 5 Primers · 6 Workflow
+    · 7 Alignment Prep · 8 BUSCO · 9 Tree.
+  - CLAUDE.md repository-layout + extraction-strategy sections updated. All 10 pages
+    render-verified (AppTest); **210 tests pass**. **RM-007 complete** — the component-page +
+    manifest-chained workflow (D-012) is now the app's structure.
 - **Primers (in-silico PCR) component page (RM-007 step 4e).** New standalone
   `pages/2_Primers.py`: assign primer pairs (citable catalogue / saved library / custom inline)
   to loci, define custom loci for markers not in the catalogue, optionally **preview &

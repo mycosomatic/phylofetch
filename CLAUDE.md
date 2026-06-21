@@ -55,13 +55,19 @@ phylofetch/
 │   ├── ncbi_utils.py
 │   ├── primer_utils.py
 │   └── project_manager.py # RunManager, tool version probing
-├── pages/                 # Streamlit multi-page app
+├── pages/                 # Streamlit multi-page app (component-page workflow, D-012)
 │   ├── 0_Project_Setup.py
-│   ├── 1_Assembly_Manager.py
-│   ├── 2_Loci_Extraction.py
-│   ├── 3_Alignment_Prep.py
-│   ├── 4_BUSCO_Phylogenomics.py
-│   └── 5_Tree_Visualization.py
+│   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
+│   ├── 2_NCBI_References.py     # per-project reference library, preview→fetch (D-013, D-011)
+│   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015)
+│   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest
+│   ├── 5_Primers.py            # in-silico PCR (degenerate-aware, D-009)
+│   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)
+│   ├── 7_Alignment_Prep.py
+│   ├── 8_BUSCO_Phylogenomics.py
+│   └── 9_Tree_Visualization.py
+│   # NB: the old monolithic 2_Loci_Extraction.py was retired 2026-06-20 (D-016);
+│   # its logic lives in src/ (extract_locus*, run_itsx, run_primer_extraction).
 ├── tests/
 │   ├── conftest.py
 │   ├── test_assembly_utils.py
@@ -104,13 +110,29 @@ pytest tests/ -v --cov=phylofetch --cov-report=term-missing
 - `select_best_locus_group()` groups by `qseqid` first, picks highest-bitscore reference
 - Returns `(hsps, ref_accession)` tuple (not just list)
 
-## Extraction strategies (Run Extraction tab)
+## Extraction strategies (now component pages, D-012/RM-007)
 
-Three selectable strategies drive loci extraction:
+As of 2026-06-20 the single "Run Extraction tab" was decomposed into standalone **component
+pages** chained by the **project manifest** (`metadata/project_manifest.json` → `workflow.steps`;
+see `project_manager`). Each extraction strategy is its own page; the **Workflow** page
+(`6_Workflow.py`) picks a named strategy and links the steps with live status. References are
+per-project (`<project>/references`, D-013) and extraction outputs are per-project
+(`<project>/results/loci/{per_strain,combined}`, D-015).
 
-1. **BLAST – PCR amplicon refs (relaxed)** — NCBI amplicon refs, skips the CDS completeness gate (`require_complete_cds=False`). Uses `blast_loci_utils.extract_from_hsps` (genomic amplicon, no frame guarantee — this is its primary, legitimate use).
-2. **Coding loci – Exonerate (frame-safe)** — `exonerate_utils.py`. tblastn/blastn narrows to the best contig, then Exonerate spliced alignment (`protein2genome` / `coding2genome`, auto-picked) refines exon/intron boundaries and yields a translatable, frame-checked CDS. ITSx still handles rDNA. Falls back to `extract_from_hsps` **with a frame-safety warning** when `exonerate` is not on PATH. Supersedes the old "BLAST – CDS / protein (strict)" path for coding CDS (D-008, addresses RM-002).
-3. **PCR Primers (in-silico PCR)** — `primer_utils.py`. Locate fwd+rev primer binding sites with `blastn-short` (IUPAC degenerate primers are expanded to concrete oligos first, D-009), pair them on the same contig with opposite strands, extract the amplicon between. No NCBI reference library needed — useful when accessions are missing or map poorly.
+1. **rDNA — ITSx** (`3_ITSx_rDNA.py`, `itsx_utils.py`). Extract ITS/ITS1/ITS2/LSU/SSU from
+   assemblies; no Exonerate. (`place_rdna_regions` / `combine_rdna_regions`.)
+2. **Coding loci — Exonerate (frame-safe)** (`4_Exonerate.py`, `exonerate_utils.py`).
+   tblastn/blastn narrows to the best contig, then Exonerate spliced alignment
+   (`protein2genome`/`coding2genome`, auto-picked) yields a translatable, frame-checked CDS.
+   A **relaxed BLAST amplicon** mode (`extract_locus`, `require_complete_cds=False`, genomic
+   amplicon, no frame guarantee — the former "PCR amplicon refs (relaxed)" strategy) is a
+   selectable toggle; the BLAST HSP path is also the automatic fallback when `exonerate` is not
+   on PATH (with a frame-safety warning). Also extracts an arbitrary **gene of interest**
+   (paste/upload ortholog). (D-008, addresses RM-002.)
+3. **PCR Primers (in-silico PCR)** (`5_Primers.py`, `primer_utils.py`). Locate fwd+rev primer
+   binding sites with `blastn-short` (IUPAC degenerate primers expanded to concrete oligos
+   first, D-009), pair on the same contig opposite strands, extract the amplicon between. No
+   NCBI reference library needed.
 
 ### Exonerate library (`exonerate_utils.py`) — D-008
 - **Hybrid pipeline**: `extract_locus_exonerate` narrows via `select_best_locus_group` to the single best contig (coords stay in contig space → no offset math), then runs Exonerate on that contig; `narrow=False` / no BLAST hit ⇒ whole-assembly run.

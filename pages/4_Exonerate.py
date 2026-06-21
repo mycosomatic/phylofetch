@@ -47,7 +47,8 @@ from phylofetch.project_manager import (
 st.set_page_config(page_title="Exonerate (coding)", page_icon="🧬", layout="wide")
 st.title("🧬 Exonerate — coding loci")
 st.caption("Frame-safe CDS extraction: BLAST narrows to the best contig, then Exonerate refines "
-           "exon/intron boundaries into a translatable, frame-checked CDS. Use the project's "
+           "exon/intron boundaries into a translatable, frame-checked CDS. A relaxed BLAST "
+           "amplicon mode (genomic, no frame guarantee) is also available. Use the project's "
            "reference library or paste an ad-hoc gene of interest.")
 
 cfg = load_config()
@@ -143,6 +144,16 @@ goi_genes = {n: p for n, p in st.session_state.goi_genes.items() if os.path.exis
 
 # ── 4 · Settings ──────────────────────────────────────────────────────────────
 st.subheader("4 · Settings")
+coding_mode = st.radio(
+    "Coding extraction mode",
+    ["Exonerate (frame-safe)", "BLAST amplicon (relaxed, genomic)"],
+    horizontal=True,
+    help="Exonerate: spliced alignment → a translatable, frame-checked CDS (recommended). "
+         "BLAST amplicon (relaxed): HSP-as-exon genomic amplicon with NO reading-frame "
+         "guarantee — the former 'PCR amplicon refs (relaxed)' strategy; use with "
+         "amplicon-style references where introns/partials are expected (D-008).",
+)
+relaxed_blast = coding_mode.startswith("BLAST amplicon")
 sa, sb, sc = st.columns(3)
 with sa:
     threads = st.slider("Threads", 1, 32, 4)
@@ -170,7 +181,11 @@ tcheck = " · ".join(f"{'✅' if shutil.which(b) else '❌'} {n}"
                                  ("tblastn", tblastn_bin)])
 st.caption("Tool check: " + tcheck)
 min_cds_pct = 50
-if not exonerate_ok:
+if relaxed_blast:
+    st.info("🧬 **Relaxed BLAST amplicon mode** — genomic amplicon via HSP-as-exon with "
+            "`require_complete_cds=False`; **no reading-frame guarantee** (D-008). For "
+            "amplicon-style references; Exonerate is skipped even if installed.")
+elif not exonerate_ok:
     st.warning("⚠️ **exonerate not found** — coding loci will fall back to the BLAST HSP-as-exon "
                "path, which does **not** validate the reading frame (a 1–2 bp boundary error can "
                "frameshift the CDS silently). Install: `conda install -c bioconda exonerate`.")
@@ -235,7 +250,8 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
         params = {"min_pident": min_pident, "maxintron": int(ex_maxintron),
                   "bestn": int(ex_bestn), "narrow": ex_narrow, "refine": ex_refine,
                   "geneticcode": int(ex_geneticcode), "evalue": evalue_float}
-        if exonerate_ok:
+        # Exonerate frame-safe path (skipped in relaxed mode even if exonerate is installed).
+        if exonerate_ok and not relaxed_blast:
             _rid, rdir = manager.dry_run(
                 [exonerate_bin, "--model", "(auto)", "--query", ref_fa, "--target", assembly],
                 module="exonerate", action=f"exonerate_{locus}_{strain_id}",
@@ -249,19 +265,23 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                 refine=ex_refine, geneticcode=int(ex_geneticcode), min_pident=float(min_pident),
                 evalue=evalue_float, threads=int(threads), strict_qc=ex_strict_qc,
                 manager=manager, run_dir=str(rdir))
-        # BLAST HSP-as-exon fallback (no reading-frame guarantee; D-008)
+        # BLAST HSP-as-exon path: relaxed genomic amplicon (require_complete_cds=False, the
+        # former 'PCR amplicon refs (relaxed)' strategy) or the frame-safe-intended fallback
+        # (require_complete_cds=True) when exonerate is absent. Neither guarantees frame (D-008).
+        require_cds = not relaxed_blast
+        tag = "blast_relaxed" if relaxed_blast else "blast_fallback"
         rr = manager.dry_run(
             [blastn_bin if detect_fasta_type(ref_fa) == "nucleotide" else tblastn_bin,
              "-query", ref_fa, "-subject", assembly, "-evalue", str(evalue_float)],
-            module="exonerate", action=f"blast_fallback_{locus}_{strain_id}",
+            module="exonerate", action=f"{tag}_{locus}_{strain_id}",
             inputs={"assembly": assembly, "reference": ref_fa},
-            outputs={"locus_dir": locus_out}, params=params)
+            outputs={"locus_dir": locus_out}, params={**params, "require_complete_cds": require_cds})
         return extract_locus(
             assembly_fasta=assembly, reference_fasta=ref_fa, output_dir=locus_out,
             strain_id=strain_id, locus_name=locus, min_pident=float(min_pident),
             min_cds_pct_of_ref=float(min_cds_pct), evalue=evalue_float,
             blastn_task="dc-megablast", threads=int(threads), blastn_bin=blastn_bin,
-            tblastn_bin=tblastn_bin, run_dir=str(rr[1]), require_complete_cds=True)
+            tblastn_bin=tblastn_bin, run_dir=str(rr[1]), require_complete_cds=require_cds)
 
     done = 0
     for strain_id in sel:

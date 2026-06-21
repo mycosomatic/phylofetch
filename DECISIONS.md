@@ -389,3 +389,28 @@ Format for each entry:
   collision-prone and inconsistent with per-project refs; rejected.
 - **Status:** active. Applied to the ITSx component page (RM-007 step 4c) onward; the
   Exonerate/Primers pages follow the same convention; the monolith is unchanged until retired.
+
+### D-016 (2026-06-20) — Decomposition complete: Workflow orchestrator + monolith retired
+- **Decision:** Finished RM-007. (1) Added the **Workflow / Strategy orchestrator**
+  (`pages/6_Workflow.py`): a named-strategy selector ("Fungal barcodes (ITSx + Exonerate)",
+  "Primers only", "Everything") over a **manifest-driven checklist** that shows each step's live
+  status (from `workflow.steps`) and links to its component page — the chain that ties the
+  standalone pages together without hiding state in `st.session_state`. (2) **Ported the relaxed
+  BLAST-amplicon strategy** into the Exonerate page as a mode toggle ("Exonerate (frame-safe)" |
+  "BLAST amplicon (relaxed, genomic)", `require_complete_cds=False`) so no capability was lost
+  on retirement (user choice). (3) **Retired the monolithic `pages/2_Loci_Extraction.py`** and
+  renumbered to the final layout: 2 NCBI References · 3 ITSx (rDNA) · 4 Exonerate · 5 Primers ·
+  6 Workflow · 7 Alignment Prep · 8 BUSCO · 9 Tree.
+- **Why:** D-012 chose full decomposition; with all four extraction components (4b–4e) built and
+  render-verified, the monolith was redundant. The user confirmed retire-now (2026-06-20) and
+  chose to **port** the relaxed BLAST strategy rather than drop it. Deletion (not a stub) is clean
+  because the monolith's logic lives entirely in `src/` (`extract_locus`,
+  `extract_locus_exonerate`, `run_itsx`, `run_primer_extraction`, `merge_per_strain_outputs`) and
+  the component pages, and git history preserves the file. This satisfies the working agreement's
+  "document abandoned/removed code (what + why)" rule.
+- **Alternatives considered:** (a) Keep a legacy stub page — rejected (clutter; components fully
+  cover it). (b) Drop the relaxed BLAST strategy — rejected by the user (regression).
+  (c) `st.page_link` without a fallback — hardened with a caption fallback so the orchestrator
+  never crashes if the page registry is unavailable (e.g. headless AppTest bare mode).
+- **Status:** active. **RM-007 complete.** CLAUDE.md repository-layout + extraction-strategy
+  sections updated. All 10 pages render-verified (AppTest); full suite 210 passing.

@@ -132,6 +132,13 @@ user's decisions in that session.
     **All four extraction component pages (4b–4e) are now done.** Next: step 5 (Workflow
     orchestrator — named strategies + manifest-driven checklist), then retire the monolithic
     `pages/2_Loci_Extraction.py` and finalize page numbering.
+  - _(2026-06-20) Step 5 + retirement **done** (D-016) → **RM-007 COMPLETE**:_ added
+    `pages/6_Workflow.py` (named-strategy selector + manifest-driven checklist linking the
+    component pages); ported the relaxed BLAST-amplicon strategy into the Exonerate page as a
+    mode toggle (no capability lost); retired the monolith and renumbered to the final layout
+    (2 References · 3 ITSx · 4 Exonerate · 5 Primers · 6 Workflow · 7 Alignment · 8 BUSCO ·
+    9 Tree). CLAUDE.md updated; all 10 pages render-verified; 210 tests pass. The
+    component-page + manifest-chained workflow (D-012) is now the app's structure.
 
 ### Review findings — risk register (2026-06-18)
 
