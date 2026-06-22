@@ -25,7 +25,7 @@ from phylofetch.config import load_config
 from phylofetch.primer_utils import (
     PrimerPair,
     delete_user_primer,
-    find_primer_amplicons,
+    find_primer_amplicons_escalating,
     get_primer_catalogue,
     load_user_primers,
     locus_primer_map,
@@ -82,8 +82,12 @@ sel = st.multiselect("Assemblies", list(registry), default=list(registry), forma
 
 # ── 2 · Loci + primer assignment ──────────────────────────────────────────────
 st.subheader("2 · Loci & primer pairs")
-max_mm = st.slider("Max primer mismatches (edit distance per primer: substitutions + unaligned)",
-                   0, 4, 2)
+max_mm = st.slider("Max primer mismatches (auto-escalates: tries stricter thresholds first)",
+                   0, 4, 3,
+                   help="Per-primer edit distance (substitutions + unaligned bases). The search "
+                        "starts strict and loosens up to this cap only if no amplicon is found — "
+                        "so a related species' primers in a divergent genome still bind, without "
+                        "surfacing loose off-targets when a clean match exists.")
 sel_loci = st.multiselect("Loci with catalogue primers", sorted(primer_locus_map),
                           help="Pick loci to amplify; assign each a pair below. "
                                "Use the custom-locus expander for anything not listed.")
@@ -183,26 +187,33 @@ with st.expander("🔍 Scan & choose binding sites (handle off-target hits)"):
     if st.button("Scan binding sites", disabled=not (sel and assignments)):
         scan_mgr = RunManager(project_dir)
         scan: dict[str, list] = {}
+        scan_used: dict[str, int] = {}
         jobs = [(s, l) for s in sel for l in assignments]
         sprog = st.progress(0.0)
         for i, (s, l) in enumerate(jobs, 1):
             asm = registry[s].get("assembly_path", "")
             try:
-                scan[f"{s}|{l}"] = find_primer_amplicons(
-                    asm, assignments[l], max_mismatches=max_mm, blastn_bin=blastn_bin,
-                    manager=scan_mgr, action=f"primer_scan_{l}_{s}")
+                cands, used = find_primer_amplicons_escalating(
+                    asm, assignments[l], start_mismatches=min(2, max_mm), max_mismatches=max_mm,
+                    blastn_bin=blastn_bin, manager=scan_mgr, action=f"primer_scan_{l}_{s}")
+                scan[f"{s}|{l}"] = cands
+                scan_used[f"{s}|{l}"] = used
             except (ValueError, FileNotFoundError) as exc:
                 scan[f"{s}|{l}"] = []
                 st.warning(f"`{s}` · {l}: {exc}")
             sprog.progress(i / max(len(jobs), 1))
         st.session_state["primer_scan"] = scan
+        st.session_state["primer_scan_used"] = scan_used
     scan = st.session_state.get("primer_scan", {})
+    scan_used = st.session_state.get("primer_scan_used", {})
     for s in sel:
         for l in assignments:
             cands = scan.get(f"{s}|{l}")
             if cands is None:
                 continue
-            st.markdown(f"**`{s}` · {l}** — {len(cands)} site(s)")
+            used = scan_used.get(f"{s}|{l}")
+            note = f" · matched at edit distance ≤{used}" if (cands and used is not None) else ""
+            st.markdown(f"**`{s}` · {l}** — {len(cands)} site(s){note}")
             if not cands:
                 st.caption("⚠️ No binding sites within the size window.")
                 continue
@@ -239,7 +250,8 @@ if st.button("🚀 Run in-silico PCR", type="primary", disabled=not (sel and ass
         with st.spinner(f"[{strain_id}] {locus} ({pp.name})…"):
             result, status = run_primer_extraction(
                 assembly_fasta=assembly, primer_pair=pp, output_dir=str(locus_out),
-                strain_id=strain_id, locus_name=locus, max_mismatches=max_mm,
+                strain_id=strain_id, locus_name=locus,
+                max_mismatches=min(2, max_mm), escalate_to=max_mm,
                 blastn_bin=blastn_bin, manager=manager,
                 candidates=scan.get(key) or None,
                 chosen_index=st.session_state.get(f"primer_pick_{key}", 0))

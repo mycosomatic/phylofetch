@@ -483,3 +483,25 @@ Format for each entry:
   non-projects and protected dirs) + 8 tests; Project Setup "Manage Data" tab; References
   skip+warn on type mismatch. Full suite 226. Verified the guard fires on the real project
   (coding loci are nucleotide → would skip a protein fetch).
+
+### D-019 (2026-06-21) — Escalating edit-distance for in-silico PCR
+- **Decision:** The primer search escalates the **per-primer edit-distance threshold**
+  (strict → loose) up to a cap, rather than using a single fixed threshold.
+  `find_primer_amplicons_escalating(start_mismatches, max_mismatches)` tries each threshold from
+  start to cap and returns the first that yields an amplicon plus the threshold used;
+  `run_primer_extraction` gains `escalate_to`; the Primers page slider is the cap (default 3,
+  escalates from 2) and the preview reports the matched edit distance. Two existing behaviours
+  were confirmed (user questions) and left as-is: the search checks **both strands/orientations**
+  (fwd+rev required on opposite strands pointing inward; amplicon on either strand) and
+  **expands IUPAC degenerate primers** into all concrete oligos before BLAST (D-009).
+- **Why:** A congener's primers in a divergent target (the user's novel *Alternaria* aff.
+  *eureka*) can need >2 mismatches to bind; the fixed default of 2 missed them and forced manual
+  slider-bumping. Strict-first escalation recovers divergent sites automatically while not
+  surfacing loose off-targets when a clean match exists.
+- **Alternatives considered:** (a) Single permissive search at the cap — surfaces loose
+  off-targets even when a strict match exists; escalation is strict-first. (b) One BLAST at the
+  cap + re-filter per threshold (more efficient for heavily-degenerate primers) — deferred; the
+  simple loop re-runs BLAST per step but only escalates when early thresholds fail (cheap in the
+  common case).
+- **Status:** active. `find_primer_amplicons_escalating` + `escalate_to` + page wiring;
+  `TestEscalatingSearch` (+4) → 230 tests.

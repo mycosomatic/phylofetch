@@ -3,6 +3,21 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-21
+
+- **Escalating edit-distance in-silico PCR search (D-019).** Primer search now escalates the
+  per-primer edit-distance threshold strict→loose up to a cap, instead of one fixed threshold —
+  so a related species' primers in a divergent genome (e.g. *A.* aff. *eureka*) still bind
+  without manual slider-bumping, while a clean match isn't loosened needlessly.
+  - `primer_utils`: new `find_primer_amplicons_escalating` (returns `(candidates, used_mm)`);
+    `run_primer_extraction` gains `escalate_to`.
+  - `pages/5_Primers.py`: the slider is now the **cap** (default 3, auto-escalates from 2); the
+    binding-site preview shows the matched edit distance.
+  - Confirmed in-code (user questions): the search already (a) checks **both strands /
+    orientations** (fwd+rev on opposite strands, either amplicon strand) and (b) **expands
+    degenerate primers** to all concrete oligos before searching (D-009).
+  - Tests: `TestEscalatingSearch` (+4) → **230 passing**.
+
 ## 2026-06-20
 
 - **In-app project/cache management + mixed-reference-type guard (D-018).**
