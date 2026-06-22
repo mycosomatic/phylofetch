@@ -19,6 +19,7 @@ from phylofetch.config import load_config
 from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
     load_project_manifest,
+    project_output_dir,
     set_workflow_strategy,
 )
 
@@ -101,7 +102,7 @@ st.markdown("---")
 st.progress(done / len(steps) if steps else 0.0, text=f"{done}/{len(steps)} steps done")
 
 # ── Outputs + handoff ─────────────────────────────────────────────────────────
-combined_dir = Path(project_dir) / "results" / "loci" / "combined"
+combined_dir = project_output_dir(project_dir) / "loci" / "combined"
 combos = sorted(combined_dir.glob("*_combined.fasta")) if combined_dir.exists() else []
 st.markdown("**Combined outputs**")
 if combos:

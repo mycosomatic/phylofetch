@@ -535,3 +535,22 @@ Format for each entry:
   (protein/nucleotide mix breaks model selection, D-018). (d) Reference-availability-first (fetch
   refs before extracting) — rejected in favour of extraction-first.
 - **Status:** active. Roadmap = **RM-008**; building component 1 (bundled protein guides) first.
+
+### D-021 (2026-06-21) — Configurable per-project output directory
+- **Decision:** All extraction/alignment artifacts (loci FASTAs, GFF3, partitions, alignments,
+  logs) write under a **configurable output root** — default **`<project>/results`**, overridable
+  via the manifest **`output_dir`** (e.g. a shared analysis folder). `project_output_dir()` /
+  `set_output_dir()` centralize this; the ITSx / Exonerate / Primers / Workflow pages write to
+  `<output_dir>/loci`, **Alignment Prep defaults its input to the same place**, and Project Setup
+  → Manage Data exposes the setting. Everything written there is plain files, portable to
+  downstream tools (Mesquite, RAxML/IQ-TREE, BEAST, iTOL, …).
+- **Why:** The user wants outputs in a known, portable location with the option to redirect.
+  Centralizing also **unifies extraction output with Alignment Prep input** (removing the D-015
+  hardcoded-path mismatch). The per-project default preserves provenance and avoids cross-project
+  collisions; a custom override is the user's responsibility (not auto-cleared by "Clear results").
+- **Alternatives considered:** (a) Keep hardcoded `<project>/results/loci` — not portable to a
+  chosen location. (b) Global `output_base` in config (the old monolith) — cross-project
+  collisions; rejected (per D-015). (c) Per-step output dirs — over-granular; one project output
+  root is simpler.
+- **Status:** active. `project_output_dir` / `set_output_dir` + manifest `output_dir` field +
+  page wiring + Manage Data UI; 4 tests → 244 passing.

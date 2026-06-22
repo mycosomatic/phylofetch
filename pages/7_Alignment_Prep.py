@@ -25,7 +25,7 @@ from phylofetch.alignment.macse import run_macse
 from phylofetch.alignment.mafft import run_mafft
 from phylofetch.alignment.trimal import run_trimal
 from phylofetch.config import load_config
-from phylofetch.project_manager import RunManager, load_json
+from phylofetch.project_manager import RunManager, load_json, project_output_dir
 
 st.set_page_config(
     page_title="Alignment Prep", page_icon="🔀", layout="wide"
@@ -67,9 +67,10 @@ with tab_align:
     with col_in:
         align_dir = st.text_input(
             "Directory containing combined FASTAs",
-            value=tp.get("output_base", str(Path.home() / "phylofetch_output")),
+            value=str(project_output_dir(project_dir) / "loci" / "combined"),
             key="align_dir",
-            help="FASTAs are files matching *_combined.fasta or any .fasta files you choose.",
+            help="Defaults to this project's output dir (set in Project Setup → Manage Data). "
+                 "FASTAs are files matching *_combined.fasta or any .fasta files you choose.",
         )
         if align_dir and Path(align_dir).is_dir():
             candidates = sorted(

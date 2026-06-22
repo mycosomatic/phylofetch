@@ -5,6 +5,13 @@
 
 ## 2026-06-21
 
+- **Configurable per-project output directory (D-021).** Extraction/alignment artifacts write
+  under a configurable root — default `<project>/results`, overridable via the manifest
+  `output_dir`. New `project_manager.project_output_dir` / `set_output_dir`; the ITSx / Exonerate
+  / Primers / Workflow pages write to `<output_dir>/loci`, **Alignment Prep defaults its input to
+  the same place** (unifying extraction output with alignment input, fixing the D-015 path
+  mismatch), and Project Setup → Manage Data has an "Output directory" field. All outputs are
+  plain files, portable to downstream tools. Tests: 4 new → **244 passing**.
 - **Bundled protein guide set — universal core (D-020 / RM-008 component 1).** Ships
   `src/phylofetch/data/protein_guides.json`: full-length **RefSeq** protein orthologs for the 8
   conserved coding markers (RPB1/RPB2/TEF1/TUB2/ACT/GAPDH/CAL/HIS3), **one Ascomycota + one

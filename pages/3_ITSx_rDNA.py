@@ -28,6 +28,7 @@ from phylofetch.project_manager import (
     effective_taxon,
     load_assembly_registry,
     load_project_manifest,
+    project_output_dir,
     update_step,
 )
 
@@ -43,7 +44,7 @@ registry = load_assembly_registry(project_dir)
 manifest = load_project_manifest(project_dir)
 default_taxon = manifest.get("default_taxon", "")
 
-loci_dir = Path(project_dir) / "results" / "loci"
+loci_dir = project_output_dir(project_dir) / "loci"
 per_strain_dir = loci_dir / "per_strain"
 combined_dir = loci_dir / "combined"
 

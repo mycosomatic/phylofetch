@@ -41,6 +41,7 @@ from phylofetch.project_manager import (
     effective_taxon,
     load_assembly_registry,
     load_project_manifest,
+    project_output_dir,
     update_step,
 )
 from phylofetch.protein_guide_utils import get_guides, guide_loci, write_guide_fasta
@@ -60,7 +61,7 @@ manifest = load_project_manifest(project_dir)
 default_taxon = manifest.get("default_taxon", "")
 
 ref_dir = project_ref_dir(project_dir)
-loci_dir = Path(project_dir) / "results" / "loci"
+loci_dir = project_output_dir(project_dir) / "loci"
 per_strain_dir = loci_dir / "per_strain"
 combined_dir = loci_dir / "combined"
 goi_dir = loci_dir / "_goi_refs"

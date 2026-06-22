@@ -28,10 +28,13 @@ from phylofetch.project_manager import (
     list_projects,
     load_assembly_registry,
     load_json,
+    load_project_manifest,
     project_data_summary,
+    project_output_dir,
     reset_workflow,
     safe_slug,
     save_assembly_registry,
+    set_output_dir,
 )
 
 st.set_page_config(page_title="Project Setup", page_icon="⚙️", layout="wide")
@@ -211,6 +214,26 @@ with tab_data:
     m2.metric("Reference loci", summ["n_ref_loci"], _mb(summ["ref_bytes"]))
     m3.metric("Combined FASTAs", summ["n_combined"], _mb(summ["results_bytes"]))
     m4.metric("Run folders", summ["n_runs"], _mb(summ["runs_bytes"]))
+
+    st.markdown("---")
+    st.markdown("**Output directory** — where extraction/alignment artifacts are written "
+                "(portable to downstream tools). Blank = default `<project>/results`.")
+    _cur_override = load_project_manifest(project_dir).get("output_dir", "")
+    oc1, oc2 = st.columns([4, 1])
+    with oc1:
+        _new_out = st.text_input(
+            "Output directory", value=_cur_override,
+            placeholder=str(Path(project_dir) / "results"),
+            label_visibility="collapsed",
+            help="Set a custom path (e.g. a shared analysis folder) or leave blank for the "
+                 "per-project default. Alignment Prep reads from here by default.",
+        )
+    with oc2:
+        if st.button("💾 Save output dir"):
+            set_output_dir(project_dir, _new_out)
+            st.success("Saved."); st.rerun()
+    st.caption(f"Currently writing to: `{project_output_dir(project_dir)}`"
+               + ("  (default)" if not _cur_override else "  (custom)"))
 
     st.markdown("---")
     st.markdown("**Clear caches** — the project stays; assembly FASTA files on disk are untouched.")

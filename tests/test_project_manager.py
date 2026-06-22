@@ -24,7 +24,9 @@ from phylofetch.project_manager import (
     load_json,
     load_project_manifest,
     project_data_summary,
+    project_output_dir,
     reset_workflow,
+    set_output_dir,
     save_assembly_registry,
     save_json,
     set_assembly_taxon,
@@ -33,6 +35,31 @@ from phylofetch.project_manager import (
     set_workflow_strategy,
     update_step,
 )
+
+
+class TestOutputDir:
+    def test_default_is_project_results(self, tmp_path):
+        p = tmp_path / "proj"; init_project(p)
+        assert project_output_dir(p) == p / "results"
+
+    def test_set_and_clear_override(self, tmp_path):
+        p = tmp_path / "proj"; init_project(p)
+        custom = tmp_path / "shared" / "out"
+        set_output_dir(p, str(custom))
+        assert project_output_dir(p) == custom
+        set_output_dir(p, "")                       # blank reverts to default
+        assert project_output_dir(p) == p / "results"
+
+    def test_manifest_has_output_dir_default(self, tmp_path):
+        assert load_project_manifest(tmp_path / "ghost")["output_dir"] == ""
+
+    def test_summary_honours_override(self, tmp_path):
+        p = tmp_path / "proj"; init_project(p)
+        custom = tmp_path / "out"; set_output_dir(p, str(custom))
+        (custom / "loci" / "combined").mkdir(parents=True)
+        (custom / "loci" / "combined" / "ITS_combined.fasta").write_text(">x\nACGT\n")
+        s = project_data_summary(p)
+        assert s["n_combined"] == 1 and s["output_dir"] == str(custom)
 
 
 class TestProjectDataManagement:

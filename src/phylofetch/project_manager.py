@@ -122,6 +122,7 @@ def _ensure_manifest_defaults(manifest: Mapping[str, Any] | None) -> dict:
     m = dict(manifest or {})
     m["schema_version"] = PROJECT_MANIFEST_SCHEMA_VERSION
     m.setdefault("default_taxon", "")
+    m.setdefault("output_dir", "")        # "" → default <project>/results (see project_output_dir)
     wf = m.get("workflow")
     if not isinstance(wf, dict):
         wf = _default_workflow()
@@ -444,6 +445,25 @@ def set_default_taxon(project_dir: str | Path, taxon: str) -> dict:
     return m
 
 
+def project_output_dir(project_dir: str | Path) -> Path:
+    """
+    Root for portable analysis artifacts (loci FASTAs, GFF3, partitions, alignments, …) that
+    feed downstream tools. Defaults to ``<project>/results``; overridable via the manifest
+    ``output_dir`` (e.g. a shared analysis folder). Pure path resolution — writers create their
+    own subdirs. (D-021)
+    """
+    od = (load_project_manifest(project_dir).get("output_dir") or "").strip()
+    return Path(od).expanduser() if od else (Path(project_dir) / "results")
+
+
+def set_output_dir(project_dir: str | Path, path: str) -> dict:
+    """Set (or clear with "") the project's output-directory override; returns the manifest."""
+    m = load_project_manifest(project_dir)
+    m["output_dir"] = (path or "").strip()
+    save_project_manifest(project_dir, m)
+    return m
+
+
 def get_workflow(project_dir: str | Path) -> dict:
     """Return the workflow/step-state block of the project manifest."""
     return load_project_manifest(project_dir)["workflow"]
@@ -537,7 +557,8 @@ def project_data_summary(project_dir: str | Path) -> dict:
 
     refs = root / "references"
     runs = root / "runs"
-    combined = root / "results" / "loci" / "combined"
+    out = project_output_dir(project_dir)          # honours the output_dir override
+    combined = out / "loci" / "combined"
     n_ref_loci = (len([d for d in refs.iterdir()
                        if d.is_dir() and (d / f"{d.name}_refs.fasta").exists()])
                   if refs.exists() else 0)
@@ -546,9 +567,10 @@ def project_data_summary(project_dir: str | Path) -> dict:
         "n_ref_loci": n_ref_loci,
         "ref_bytes": _bytes(refs),
         "n_combined": len(list(combined.glob("*.fasta"))) if combined.exists() else 0,
-        "results_bytes": _bytes(root / "results"),
+        "results_bytes": _bytes(out),
         "n_runs": len([d for d in runs.iterdir() if d.is_dir()]) if runs.exists() else 0,
         "runs_bytes": _bytes(runs),
+        "output_dir": str(out),
     }
 
 
