@@ -5,6 +5,27 @@
 
 ## 2026-06-22
 
+- **NCBI References repurposed — taxon-closer guide supplement, coding-only (D-023).** Since the
+  bundled universal protein guides (D-020) are the default extraction source, the References page
+  is now optional and reframed to fetch **taxon-closer protein** orthologs that *supplement* the
+  bundled core (plus nucleotide refs for the relaxed-BLAST path).
+  - `pages/4_Exonerate.py`: new third reference source **"Bundled guides + project library
+    (taxon-closer)"** — merges the bundled Asco/Basidio guides with the project's fetched
+    **protein** refs into one `protein2genome` query (Exonerate keeps the best-scoring model;
+    bundled stays the floor). Only protein project refs are layered in; a nucleotide library falls
+    through to bundled-only. Per-locus augmentation count shown in the loci picker.
+  - `protein_guide_utils.write_guide_fasta` gains `extra_records` (appended after bundled guides).
+  - `pages/2_NCBI_References.py`: reframed wording; **rDNA (ITS/LSU/SSU) removed** — ITSx extracts
+    rDNA and rDNA comparison is imported as tips on the Reference Taxa page. Coding loci only;
+    Protein default + Nucleotide retained.
+  - Scientific note (clarified with the user): a taxon-closer guide improves amino-acid alignment
+    confidence/sensitivity but does **not** change intron finding — `protein2genome` locates
+    introns in the *target* (the protein guide is intron-free), so lineage-variable intron
+    structure is handled per-sequence. Intron-structure hand-checking routes through tips (the
+    D-022 soft-masked genomic), not guides.
+  - Tests: +2 (`write_guide_fasta` extra_records) → **268 passing** (was 266). Both pages
+    stub-render-verified.
+
 - **Codon Tip Prep — frame comparison tips into codon-ready CDS (D-022 / RM-008 component 2).**
   The "manual-Mesquite step", automated. New single-purpose page `pages/8_Codon_Tip_Prep.py` +
   `src/phylofetch/codon_prep_utils.py`: each coding-locus comparison tip (imported on Reference

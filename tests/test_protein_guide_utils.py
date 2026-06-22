@@ -78,6 +78,27 @@ class TestWriteGuideFasta:
     def test_unknown_locus_returns_none(self, tmp_path):
         assert write_guide_fasta("NOPE", str(tmp_path / "x.fasta"), include_user=False) is None
 
+    def test_extra_records_appended_after_bundled(self, tmp_path):
+        from Bio.Seq import Seq
+        from Bio.SeqRecord import SeqRecord
+        extra = [SeqRecord(Seq("MEEKAAA"), id="KAA123.1",
+                           description="[proj] taxon-closer")]
+        out = tmp_path / "RPB2_guide.fasta"
+        path = write_guide_fasta("RPB2", str(out), include_user=False, extra_records=extra)
+        recs = list(SeqIO.parse(str(path), "fasta"))
+        n_bundled = len(get_guides("RPB2", include_user=False))
+        assert len(recs) == n_bundled + 1
+        assert recs[-1].id == "KAA123.1"            # project ref appended after bundled guides
+
+    def test_extra_records_only_for_unguided_locus(self, tmp_path):
+        from Bio.Seq import Seq
+        from Bio.SeqRecord import SeqRecord
+        extra = [SeqRecord(Seq("MKLT"), id="XP_9.1", description="")]
+        out = tmp_path / "NOPE_guide.fasta"
+        path = write_guide_fasta("NOPE", str(out), include_user=False, extra_records=extra)
+        assert path is not None
+        assert [r.id for r in SeqIO.parse(str(path), "fasta")] == ["XP_9.1"]
+
 
 class TestUserLineagePackMerge:
     def test_user_pack_extends_and_adds(self, tmp_path):

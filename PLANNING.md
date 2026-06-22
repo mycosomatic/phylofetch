@@ -189,6 +189,17 @@ user's decisions in that session.
     a built-in. **Still deferred (RM-008):** components 4 (availability matrix), 5 (tree-set page),
     6 (GenBank submission export), and the target-taxa tips search mode.
 
+### Architecture refinements (not numbered RM items)
+
+- _(2026-06-22) **NCBI References page repurposed** (D-023)._ With bundled universal protein guides
+  the default extraction source (D-020), the References page is now optional: it fetches
+  **taxon-closer protein** orthologs that *supplement* the bundled core (new Exonerate "Bundled +
+  project library" mode) and nucleotide refs for the relaxed-BLAST path. **rDNA removed** from it
+  (ITSx extracts rDNA; tips compare it). Clarifies the three sequence sources: bundled guides ·
+  taxon-closer guide supplement · comparison tips. (Closer guides aid alignment confidence, *not*
+  intron finding — Exonerate locates introns in the target; intron-structure hand-checks route
+  through tips, D-022.)
+
 ### Review findings — risk register (2026-06-18)
 
 Recorded so we don't lose them; each maps to a roadmap item above.

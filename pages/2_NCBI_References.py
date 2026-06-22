@@ -1,15 +1,18 @@
 """
 pages/2_NCBI_References.py
 --------------------------
-NCBI References — component page (D-012 / RM-007 step 4b).
+NCBI References — component page (D-012 / RM-007 step 4b; repurposed D-023).
 
-Build the per-project reference library (D-013): tick loci, preview NCBI hit counts for the
-project taxon, then fetch references into <project>/references. Standalone (usable on its own)
-and chainable (records provenance + step state in the project manifest). References feed the
-BLAST and Exonerate extraction strategies.
+Fetch **optional, taxon-closer extraction references** into the per-project library
+(<project>/references, D-013). Since D-020 made the bundled universal protein guides the default
+extraction source, this page is no longer required — its job now is to pull genome-annotated
+**protein** orthologs from (or near) the project taxon to *supplement* the bundled Asco/Basidio
+core on the Exonerate page's "Bundled + project library (taxon-closer)" mode, and to fetch
+**nucleotide** references for the relaxed-BLAST amplicon path. Standalone + chainable (provenance
+to the manifest).
 
-Interim during the page decomposition: this lives alongside the old 2_Loci_Extraction page
-until the ITSx / Exonerate / Primers component pages exist and the monolith is retired.
+Coding loci only: rDNA (ITS/LSU/SSU) is **not** here — ITSx extracts it from assemblies (no refs
+needed) and rDNA comparison sequences are imported as tips on the Reference Taxa page (D-023).
 """
 
 import sys
@@ -45,10 +48,12 @@ from phylofetch.project_manager import (
 )
 
 st.set_page_config(page_title="NCBI References", page_icon="📚", layout="wide")
-st.title("📚 NCBI References")
-st.caption("Build this project's reference library: pick loci, preview NCBI hit counts for "
-           "your taxon, then fetch. References are stored per-project and used by the BLAST "
-           "and Exonerate extraction strategies.")
+st.title("📚 NCBI References — taxon-closer guides")
+st.caption("**Optional.** The bundled universal protein guides (D-020) already extract coding "
+           "loci kingdom-wide. Use this page to fetch **taxon-closer protein** orthologs that "
+           "*supplement* those guides (Exonerate's 'Bundled + project library' mode), or "
+           "**nucleotide** refs for the relaxed-BLAST path. Coding loci only — rDNA is handled by "
+           "ITSx (extraction) and the Reference Taxa page (comparison tips).")
 
 cfg = load_config()
 project_dir = cfg.get("project_dir", str(DEFAULT_PROJECT_DIR))
@@ -63,7 +68,7 @@ default_taxon = manifest.get("default_taxon", "")
 st.caption(f"📁 Project: `{Path(project_dir).name}`  ·  library: "
            f"`{str(ref_dir).replace(str(Path.home()), '~')}`")
 
-RDNA = ["ITS", "LSU", "SSU"]
+RDNA = ["ITS", "LSU", "SSU"]      # excluded here (D-023): ITSx extracts rDNA, tips compare it
 CODING = [k for k in LOCUS_CATALOGUE if k not in RDNA]
 
 # ── NCBI email gate ───────────────────────────────────────────────────────────
@@ -101,9 +106,8 @@ with cta:
         "Reference type", ["Protein (recommended for coding)", "Nucleotide"], horizontal=False,
         help="Protein → Exonerate uses protein2genome: a protein query is intron-free and "
              "pins the reading frame, giving clean frame-checked CDS even from a congener "
-             "(cross-species works). Nucleotide → genomic barcodes for the relaxed-BLAST / "
-             "primer paths and GenBank-comparable trees. rDNA (ITS/LSU/SSU) is always "
-             "nucleotide (rRNA has no protein).",
+             "(cross-species works) — this is what supplements the bundled guides. Nucleotide → "
+             "genomic barcodes for the relaxed-BLAST amplicon path / GenBank-comparable trees.",
     )
 with ctb:
     type_mode_label = st.radio(
@@ -114,8 +118,8 @@ with ctb:
 ref_type = "protein" if ref_type_label.startswith("Protein") else "nucleotide"
 type_mode = {"Prefer type": "prefer", "All": "all", "Type only": "type_only"}[type_mode_label]
 if ref_type == "protein":
-    st.caption("🧬 Coding loci → **protein** references (protein2genome, frame-safe). "
-               "rDNA loci stay nucleotide for ITSx.")
+    st.caption("🧬 **Protein** references (protein2genome, frame-safe) — these layer onto the "
+               "bundled universal guides on the Exonerate page as a taxon-closer ortholog.")
 
 
 def _locus_db(loc: str) -> str:
@@ -141,12 +145,12 @@ st.subheader("2 · Loci")
 bsel, bclr, _ = st.columns([1, 1, 5])
 with bsel:
     if st.button("Select all"):
-        for loc in LOCUS_CATALOGUE:
+        for loc in CODING:
             st.session_state[f"chk_{loc}"] = True
         st.rerun()
 with bclr:
     if st.button("Clear"):
-        for loc in LOCUS_CATALOGUE:
+        for loc in CODING:
             st.session_state[f"chk_{loc}"] = False
         st.rerun()
 
@@ -158,13 +162,7 @@ def _locus_checkbox(locus: str) -> bool:
 
 
 selected: list[str] = []
-st.markdown("**rDNA** — ITSx extracts these from assemblies; fetch here mainly for outgroups.")
-for c, loc in zip(st.columns(len(RDNA)), RDNA):
-    with c:
-        if _locus_checkbox(loc):
-            selected.append(loc)
-
-st.markdown("**Protein-coding**")
+st.markdown("**Protein-coding loci**")
 ccols = st.columns(4)
 for i, loc in enumerate(CODING):
     with ccols[i % 4]:

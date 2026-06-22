@@ -619,3 +619,46 @@ Format for each entry:
   (`TestSoftMaskGenomic` + a `build_result_from_model` masked-genomic check) → **266 passing**
   (was 250). New page render-verified (executes top-to-bottom against a streamlit stub; AppTest
   unavailable in this checkout). **RM-008 component 2 done.**
+
+### D-023 (2026-06-22) — NCBI References page repurposed: taxon-closer guide supplement, coding-only
+- **Decision:** Now that the bundled universal protein guides (D-020) are the default coding-locus
+  extraction source, the NCBI References page is **optional** and is repurposed to fetch
+  **taxon-closer protein orthologs that *supplement* the bundled core**, plus **nucleotide**
+  references for the relaxed-BLAST amplicon path. Concretely: (1) the Exonerate page gains a third
+  reference source, **"Bundled guides + project library (taxon-closer)"**, which merges the bundled
+  Asco/Basidio guides with the project's fetched **protein** refs into one `protein2genome` query
+  and lets Exonerate keep whichever model scores best (bundled stays the floor;
+  `protein_guide_utils.write_guide_fasta` gains an `extra_records` param). Only **protein** project
+  refs are layered in — a nucleotide library falls through to bundled-only (mixing query types
+  would break `detect_fasta_type` model selection). (2) The References page is restricted to
+  **coding loci** — **rDNA (ITS/LSU/SSU) is removed** from it: ITSx extracts rDNA from assemblies
+  (no refs needed) and rDNA comparison sequences are imported as tips on the Reference Taxa page.
+  The page keeps Protein (default) + Nucleotide and already searches the project taxon with a
+  genus fallback, ranking RefSeq full-length proteins first.
+- **Why:** D-020 removed the *need* to fetch guides per project, so the page's purpose narrowed.
+  Its remaining value is a near-relative ortholog that improves amino-acid **alignment confidence
+  / sensitivity** on divergent or atypical coding loci. Important scientific clarification (raised
+  by the user from Mesquite hand-alignment experience that intron structure varies across
+  lineages): a closer guide does **not** change *where* introns are found — `protein2genome` aligns
+  an **intron-free protein** and locates introns in the **target** sequence via its splice model,
+  so lineage-variable intron positions are handled per-sequence regardless of the guide; the guide
+  cannot impose its own intron map. So the supplement is a modest alignment-quality gain, not an
+  intron-finding fix, and it has no downside (Exonerate just keeps the best-scoring model). The
+  intron-structure **hand-check** the user wants instead routes through **tips** (the soft-masked
+  genomic from D-022): import a close relative as a tip and compare intron positions by eye. rDNA
+  on this page was redundant (extraction = ITSx, comparison = tips), so removing it clarifies the
+  three distinct sequence sources (bundled guides · taxon-closer guide supplement · comparison tips).
+- **Alternatives considered:** (a) **Retire the References page entirely** — rejected: it still
+  adds value for divergent loci and supplies nucleotide refs for the relaxed-BLAST path. (b) **Keep
+  reference source either/or (no "both")** — rejected: forces choosing closer-only (losing the
+  universal Basidiomycota safety net) or bundled-only; the combined query gives floor + augmentation.
+  (c) **Auto-fetch a per-genus "guide pack"** (one click → best RefSeq protein per marker registered
+  as project guides) — deferred: the page already fetches taxon-closer RefSeq proteins; auto-
+  registration is a later convenience. (d) **Mix nucleotide project refs into the protein guide
+  set** — rejected: breaks `protein2genome` model selection; only protein refs are layered, and the
+  "Project reference library" mode covers nucleotide-only use.
+- **Status:** active. Implemented 2026-06-22. `write_guide_fasta(extra_records=…)` (+2 tests),
+  Exonerate page "both" mode (protein-only merge, guarded; per-locus augmentation count shown),
+  References page reframed + coding-only. **268 passing** (was 266). Both pages stub-render-verified
+  (Exonerate "both" mode resolves project protein refs; References shows no rDNA checkboxes).
+  Refines D-017 / D-020; no roadmap (RM) item — an architecture refinement of the extraction front.

@@ -32,6 +32,7 @@ from phylofetch.exonerate_utils import extract_locus_exonerate
 from phylofetch.ncbi_utils import (
     LOCUS_CATALOGUE,
     count_refs,
+    load_ref_records,
     locus_ref_fasta,
     project_ref_dir,
 )
@@ -75,6 +76,16 @@ if not registry:
 
 CODING = [k for k in LOCUS_CATALOGUE if k not in ("ITS", "LSU", "SSU")]
 
+
+def _project_protein_refs(loc: str) -> list:
+    """Project-library records for `loc`, but only when that library is PROTEIN — so they can
+    join the protein2genome guide set. A nucleotide library returns [] (mixing models is wrong);
+    that case is handled by the 'Project reference library' mode instead."""
+    fa = locus_ref_fasta(loc, ref_dir=ref_dir)
+    if os.path.exists(fa) and os.path.getsize(fa) > 0 and detect_fasta_type(fa) == "protein":
+        return load_ref_records(loc, ref_dir=ref_dir)
+    return []
+
 # ── 1 · Assemblies ────────────────────────────────────────────────────────────
 st.subheader("1 · Assemblies")
 
@@ -90,18 +101,36 @@ sel = st.multiselect("Assemblies", list(registry), default=list(registry), forma
 st.subheader("2 · Coding loci")
 ref_source = st.radio(
     "Reference source",
-    ["Bundled protein guides (recommended — no fetching)", "Project reference library"],
+    ["Bundled protein guides (recommended — no fetching)",
+     "Bundled guides + project library (taxon-closer)",
+     "Project reference library"],
     help="Bundled: universal cross-fungal protein guides shipped with phylofetch (D-020) → "
          "Exonerate protein2genome, works kingdom-wide, no NCBI fetching. "
-         "Project library: protein/nucleotide references you fetched on the NCBI References page.",
+         "Bundled + project library: the universal guides PLUS the project's fetched "
+         "target-taxon protein refs in one query — Exonerate keeps whichever scores best "
+         "(D-023). Project library: only the protein/nucleotide refs you fetched on the NCBI "
+         "References page.",
 )
-use_bundled = ref_source.startswith("Bundled")
-if use_bundled:
+ref_mode = ("both" if ref_source.startswith("Bundled guides +")
+            else "bundled" if ref_source.startswith("Bundled")
+            else "library")
+
+if ref_mode in ("bundled", "both"):
     avail = [loc for loc in CODING if loc in set(guide_loci())]
-    sel_loci = st.multiselect(
-        "Loci (bundled guides)", avail, default=avail,
-        format_func=lambda loc: f"{loc} · {len(get_guides(loc))} guide(s)",
-    )
+
+    def _fmt_guide(loc: str) -> str:
+        base = f"{loc} · {len(get_guides(loc))} guide(s)"
+        if ref_mode == "both":
+            n = len(_project_protein_refs(loc))
+            return base + (f" + {n} proj protein" if n else "")
+        return base
+
+    sel_loci = st.multiselect("Loci (bundled guides)", avail, default=avail,
+                              format_func=_fmt_guide)
+    if ref_mode == "both":
+        st.caption("ℹ️ Only **protein** project references are layered onto the bundled guides "
+                   "(protein2genome); a locus whose library is nucleotide just uses the bundled "
+                   "guides here. Fetch taxon-closer proteins on the **NCBI References** page.")
 else:
     avail = [loc for loc in CODING if count_refs(loc, ref_dir=ref_dir) > 0]
     if not avail:
@@ -311,11 +340,13 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
         st.markdown(f"**{strain_id}**" + (f" · {effective_taxon(registry[strain_id], default_taxon)}"
                                           if effective_taxon(registry[strain_id], default_taxon) else ""))
         for locus in sel_loci:
-            if use_bundled:
-                ref_fa = write_guide_fasta(
-                    locus, str(Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta"))
-            else:
+            if ref_mode == "library":
                 ref_fa = locus_ref_fasta(locus, ref_dir=ref_dir)
+            else:
+                extra = _project_protein_refs(locus) if ref_mode == "both" else None
+                ref_fa = write_guide_fasta(
+                    locus, str(Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta"),
+                    extra_records=extra)
             if not ref_fa or not os.path.exists(ref_fa):
                 _report(locus, None, "no reference available for this locus")
                 done += 1; prog.progress(done / total)
@@ -341,7 +372,7 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                 outputs={loc: list(m) for loc, m in combined.items()},
                 notes=f"strains={len(sel)}; loci={','.join(sel_loci) or '—'}; "
                       f"goi={','.join(goi_genes) or '—'}; "
-                      f"ref_source={'bundled_guides' if use_bundled else 'project_library'}; "
+                      f"ref_source={ref_mode}; "
                       f"engine={'exonerate' if exonerate_ok else 'blast-fallback'}"
                       + ("" if not relaxed_blast else "; mode=relaxed_blast"))
     st.session_state["exonerate_combined"] = {loc: {k: v for k, v in m.items()}

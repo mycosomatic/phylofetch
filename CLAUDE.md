@@ -62,7 +62,7 @@ phylofetch/
 ├── pages/                 # Streamlit multi-page app (component-page workflow, D-012)
 │   ├── 0_Project_Setup.py
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
-│   ├── 2_NCBI_References.py     # per-project reference library, preview→fetch (D-013, D-011)
+│   ├── 2_NCBI_References.py     # optional taxon-closer protein/nucleotide guides, coding-only (D-023, D-013, D-011)
 │   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015)
 │   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest
 │   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
@@ -141,7 +141,10 @@ per-project (`<project>/references`, D-013) and extraction outputs are per-proje
    amplicon, no frame guarantee — the former "PCR amplicon refs (relaxed)" strategy) is a
    selectable toggle; the BLAST HSP path is also the automatic fallback when `exonerate` is not
    on PATH (with a frame-safety warning). Also extracts an arbitrary **gene of interest**
-   (paste/upload ortholog). (D-008, addresses RM-002.)
+   (paste/upload ortholog). (D-008, addresses RM-002.) **Reference source** (D-020/D-023):
+   *Bundled guides* (universal Asco/Basidio protein core, default, no fetching) · *Bundled +
+   project library (taxon-closer)* (bundled guides plus the project's fetched protein refs in one
+   `protein2genome` query, best model wins) · *Project reference library* (only the fetched refs).
 3. **PCR Primers (in-silico PCR)** (`5_Primers.py`, `primer_utils.py`). Locate fwd+rev primer
    binding sites with `blastn-short` (IUPAC degenerate primers expanded to concrete oligos
    first, D-009), pair on the same contig opposite strands, extract the amplicon between. No

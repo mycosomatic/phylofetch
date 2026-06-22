@@ -72,11 +72,19 @@ def get_guides(locus: str, include_user: bool = True) -> list[dict]:
     return load_protein_guides(include_user=include_user).get(locus, [])
 
 
-def write_guide_fasta(locus: str, output_path: str, include_user: bool = True) -> Optional[str]:
+def write_guide_fasta(locus: str, output_path: str, include_user: bool = True,
+                      extra_records=None) -> Optional[str]:
     """
     Write the protein guide(s) for ``locus`` to ``output_path`` as FASTA (the Exonerate query).
     Multiple guides (e.g. Ascomycota + Basidiomycota) are written together so Exonerate's
     best-model selection can pick the closest. Returns the path, or None if no guide exists.
+
+    ``extra_records`` (a list of ``SeqRecord``) are appended after the bundled guides — used to
+    layer the project's fetched **taxon-closer** protein references on top of the universal core
+    (D-023), so Exonerate has both the kingdom-wide floor and a near-relative ortholog and keeps
+    whichever scores best. They must be protein (the model is ``protein2genome``); the caller is
+    responsible for that. With only ``extra_records`` and no bundled guide for the locus, those
+    are written alone.
     """
     seqrecs = []
     for g in get_guides(locus, include_user=include_user):
@@ -89,6 +97,8 @@ def write_guide_fasta(locus: str, output_path: str, include_user: bool = True) -
             description=(f"[guide] [locus={locus}] [organism={g.get('organism', '')}] "
                         f"[clade={g.get('clade', '')}]"),
         ))
+    if extra_records:
+        seqrecs.extend(extra_records)
     if not seqrecs:
         return None
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
