@@ -5,6 +5,14 @@
 
 ## 2026-06-21
 
+- **Reference Taxa / Tips page (D-020 / RM-008 component 3).** New `pages/7_Reference_Taxa.py`
+  + `tips_utils.py`: paste a flat, mixed list of GenBank accessions → each is **auto-classified
+  to its locus** (`classify_locus`, via the D-011 synonym catalogue) → fetched and stored as tips
+  in a **separate per-project store** `<project>/tips/<locus>/` (reuses the per-locus library
+  helpers with a tips `ref_dir`; never mixed with protein guides, cf. D-018). Unassigned
+  accessions surface for one-click manual assignment; per-locus review table (NCBI links) for
+  culling. Analysis pages renumbered (**Alignment 8 · BUSCO 9 · Tree 10**); Workflow links
+  updated. Target-taxa search mode deferred (RM-008). Tests: 6 (classifier) → **250 passing**.
 - **Configurable per-project output directory (D-021).** Extraction/alignment artifacts write
   under a configurable root — default `<project>/results`, overridable via the manifest
   `output_dir`. New `project_manager.project_output_dir` / `set_output_dir`; the ITSx / Exonerate

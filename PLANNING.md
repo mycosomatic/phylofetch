@@ -166,6 +166,13 @@ user's decisions in that session.
     (bundled default, no fetching). Verified: bundled cross-genus guides → clean 0-stop CDS from
     a real Alternaria assembly. 10 tests. Next: component 2 (Exonerate-process amplicon tips →
     MACSE), then the Reference Taxa / Tips page.
+  - _(2026-06-21) Component 3 (Reference Taxa / Tips page) **done** (D-020):_ new
+    `pages/7_Reference_Taxa.py` + `tips_utils.py` — paste a mixed accession list →
+    `classify_locus` auto-sorts each to its locus (D-011 synonyms) → stored in a separate
+    per-project tips store (`<project>/tips/`); unassigned → manual assign; per-locus review/cull.
+    Analysis pages renumbered (Alignment 8 · BUSCO 9 · Tree 10). 6 classifier tests.
+    **Deferred:** target-taxa search mode (≥3/locus review) + the availability matrix + tree-set
+    page. Next: component 2 (tips → CDS → MACSE) ties tips into the alignment.
 
 ### Review findings — risk register (2026-06-18)
 

@@ -61,11 +61,12 @@ phylofetch/
 │   ├── 2_NCBI_References.py     # per-project reference library, preview→fetch (D-013, D-011)
 │   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015)
 │   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest
-│   ├── 5_Primers.py            # in-silico PCR (degenerate-aware, D-009)
+│   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
 │   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)
-│   ├── 7_Alignment_Prep.py
-│   ├── 8_BUSCO_Phylogenomics.py
-│   └── 9_Tree_Visualization.py
+│   ├── 7_Reference_Taxa.py     # tree tips: paste accessions → auto-classify to locus (D-020)
+│   ├── 8_Alignment_Prep.py
+│   ├── 9_BUSCO_Phylogenomics.py
+│   └── 10_Tree_Visualization.py
 │   # NB: the old monolithic 2_Loci_Extraction.py was retired 2026-06-20 (D-016);
 │   # its logic lives in src/ (extract_locus*, run_itsx, run_primer_extraction).
 ├── tests/

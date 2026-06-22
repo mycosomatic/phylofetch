@@ -108,7 +108,8 @@ st.markdown("**Combined outputs**")
 if combos:
     for p in combos:
         st.write(f"✅ `{p.name}`")
-    _link("pages/7_Alignment_Prep.py", "Continue to Alignment Prep →")
+    _link("pages/7_Reference_Taxa.py", "Add comparison taxa / tips →")
+    _link("pages/8_Alignment_Prep.py", "Continue to Alignment Prep →")
 else:
     st.caption("No combined FASTAs yet — run the extraction steps above. They appear in "
                f"`{str(combined_dir).replace(str(Path.home()), '~')}`.")
