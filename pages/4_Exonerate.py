@@ -43,6 +43,7 @@ from phylofetch.project_manager import (
     load_project_manifest,
     update_step,
 )
+from phylofetch.protein_guide_utils import get_guides, guide_loci, write_guide_fasta
 
 st.set_page_config(page_title="Exonerate (coding)", page_icon="🧬", layout="wide")
 st.title("🧬 Exonerate — coding loci")
@@ -84,16 +85,31 @@ def _fmt(sid: str) -> str:
 
 sel = st.multiselect("Assemblies", list(registry), default=list(registry), format_func=_fmt)
 
-# ── 2 · Coding loci (project library) ─────────────────────────────────────────
-st.subheader("2 · Coding loci (from this project's reference library)")
-avail = [loc for loc in CODING if count_refs(loc, ref_dir=ref_dir) > 0]
-if not avail:
-    st.caption("No coding-locus references in this project yet — fetch them on the "
-               "**NCBI References** page first.")
-sel_loci = st.multiselect(
-    "Loci", avail, default=avail,
-    format_func=lambda loc: f"{loc} · {count_refs(loc, ref_dir=ref_dir)} refs",
+# ── 2 · Coding loci ───────────────────────────────────────────────────────────
+st.subheader("2 · Coding loci")
+ref_source = st.radio(
+    "Reference source",
+    ["Bundled protein guides (recommended — no fetching)", "Project reference library"],
+    help="Bundled: universal cross-fungal protein guides shipped with phylofetch (D-020) → "
+         "Exonerate protein2genome, works kingdom-wide, no NCBI fetching. "
+         "Project library: protein/nucleotide references you fetched on the NCBI References page.",
 )
+use_bundled = ref_source.startswith("Bundled")
+if use_bundled:
+    avail = [loc for loc in CODING if loc in set(guide_loci())]
+    sel_loci = st.multiselect(
+        "Loci (bundled guides)", avail, default=avail,
+        format_func=lambda loc: f"{loc} · {len(get_guides(loc))} guide(s)",
+    )
+else:
+    avail = [loc for loc in CODING if count_refs(loc, ref_dir=ref_dir) > 0]
+    if not avail:
+        st.caption("No coding-locus references in this project yet — fetch them on the "
+                   "**NCBI References** page, or switch to bundled guides above.")
+    sel_loci = st.multiselect(
+        "Loci", avail, default=avail,
+        format_func=lambda loc: f"{loc} · {count_refs(loc, ref_dir=ref_dir)} refs",
+    )
 
 # ── 3 · Gene of interest (ad-hoc ortholog) ────────────────────────────────────
 st.subheader("3 · Gene of interest (optional)")
@@ -294,7 +310,15 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
         st.markdown(f"**{strain_id}**" + (f" · {effective_taxon(registry[strain_id], default_taxon)}"
                                           if effective_taxon(registry[strain_id], default_taxon) else ""))
         for locus in sel_loci:
-            ref_fa = locus_ref_fasta(locus, ref_dir=ref_dir)
+            if use_bundled:
+                ref_fa = write_guide_fasta(
+                    locus, str(Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta"))
+            else:
+                ref_fa = locus_ref_fasta(locus, ref_dir=ref_dir)
+            if not ref_fa or not os.path.exists(ref_fa):
+                _report(locus, None, "no reference available for this locus")
+                done += 1; prog.progress(done / total)
+                continue
             with st.spinner(f"[{strain_id}] {locus}…"):
                 result, status = _extract_coding(strain_id, assembly, locus, ref_fa,
                                                  str(strain_out / locus))
@@ -316,7 +340,9 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                 outputs={loc: list(m) for loc, m in combined.items()},
                 notes=f"strains={len(sel)}; loci={','.join(sel_loci) or '—'}; "
                       f"goi={','.join(goi_genes) or '—'}; "
-                      f"engine={'exonerate' if exonerate_ok else 'blast-fallback'}")
+                      f"ref_source={'bundled_guides' if use_bundled else 'project_library'}; "
+                      f"engine={'exonerate' if exonerate_ok else 'blast-fallback'}"
+                      + ("" if not relaxed_blast else "; mode=relaxed_blast"))
     st.session_state["exonerate_combined"] = {loc: {k: v for k, v in m.items()}
                                               for loc, m in combined.items()}
     st.success("Coding extraction complete — provenance recorded in the manifest.")

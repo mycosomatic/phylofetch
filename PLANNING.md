@@ -140,6 +140,33 @@ user's decisions in that session.
     9 Tree). CLAUDE.md updated; all 10 pages render-verified; 210 tests pass. The
     component-page + manifest-chained workflow (D-012) is now the app's structure.
 
+- **RM-008 (2026-06-21) — Standardized "setup" phase (extraction-first workflow).**
+  Establish a turnkey, reproducible front end that runs before any tree-building, designed to
+  generalize well beyond Alternaria (see D-020). Components, in build order:
+  1. **Bundled protein guide set** — ships with the package (like `primers.json`): a *universal
+     core* of conserved coding markers (RPB1/RPB2/TEF1/TUB2/ACT/GAPDH/CAL/HIS3) with ≥1
+     Ascomycota + ≥1 Basidiomycota full-length protein per locus, plus *swappable lineage packs*
+     for clade-specific markers (e.g. Alt a1, endoPG for Dothideomycetes). Drives `protein2genome`
+     extraction with no per-project fetching of guides. _[FIRST — extraction foundation]_
+  2. **Exonerate amplicon-tip processing → frame-consistent CDS → MACSE** (the manual-Mesquite
+     replacement): run reference amplicon tips through the same protein guide to get CDS in a
+     common frame, then codon-aware align.
+  3. **Reference Taxa / Tips page** (after extraction): import comparison sequences for target
+     taxa via (a) paste accessions, (b) target-taxa search (≥3/locus, NCBI-linked review),
+     (c) paste accessions from a web BLAST; **auto-classify each accession to its locus** via the
+     synonym catalogue; stored **separately from extraction guides** (`<project>/tips/`).
+  4. **Availability matrix** (locus × taxon coverage) — missing data is expected/surfaced, not
+     fatal.
+  5. **Tree-set page** — choose the final locus set for the matrix (separate from tips import).
+  6. **GenBank submission export** (final step) — FASTA + feature table from the Exonerate GFF3.
+  All steps record status/outputs in the project manifest so a re-opened project knows what's done.
+  - _(2026-06-21) Component 1 (bundled protein guide set) **done** (D-020):_
+    `data/protein_guides.json` (8 conserved markers × Asco+Basidio full-length RefSeq guides) +
+    `protein_guide_utils.py` (loader + user lineage packs) + Exonerate "Reference source" toggle
+    (bundled default, no fetching). Verified: bundled cross-genus guides → clean 0-stop CDS from
+    a real Alternaria assembly. 10 tests. Next: component 2 (Exonerate-process amplicon tips →
+    MACSE), then the Reference Taxa / Tips page.
+
 ### Review findings — risk register (2026-06-18)
 
 Recorded so we don't lose them; each maps to a roadmap item above.

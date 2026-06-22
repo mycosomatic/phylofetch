@@ -5,6 +5,18 @@
 
 ## 2026-06-21
 
+- **Bundled protein guide set — universal core (D-020 / RM-008 component 1).** Ships
+  `src/phylofetch/data/protein_guides.json`: full-length **RefSeq** protein orthologs for the 8
+  conserved coding markers (RPB1/RPB2/TEF1/TUB2/ACT/GAPDH/CAL/HIS3), **one Ascomycota + one
+  Basidiomycota each** (16 guides; provenance = accession/organism/clade/length). New
+  `protein_guide_utils.py` — `load_protein_guides` / `guide_loci` / `get_guides` /
+  `write_guide_fasta`, with user **lineage packs** at `~/.phylofetch/protein_guides.json` merged
+  on top. `pages/4_Exonerate.py` gains a **Reference source** toggle (Bundled guides, default →
+  no fetching | Project library); bundled guides run protein2genome. **Verified end-to-end:**
+  bundled Penicillium+Desarmillaria RPB2 guides extract a clean **0-stop, 3606 bp** RPB2 CDS
+  from a real *Alternaria* assembly (TEF1 likewise, 0 stops) — confirms kingdom-wide guides.
+  Tests: 10 new (`tests/test_protein_guide_utils.py`: data integrity, loader, lineage-pack
+  merge) → **240 passing**.
 - **Escalating edit-distance in-silico PCR search (D-019).** Primer search now escalates the
   per-primer edit-distance threshold strict→loose up to a cap, instead of one fixed threshold —
   so a related species' primers in a divergent genome (e.g. *A.* aff. *eureka*) still bind

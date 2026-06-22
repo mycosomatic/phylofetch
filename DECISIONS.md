@@ -505,3 +505,33 @@ Format for each entry:
   common case).
 - **Status:** active. `find_primer_amplicons_escalating` + `escalate_to` + page wiring;
   `TestEscalatingSearch` (+4) → 230 tests.
+
+### D-020 (2026-06-21) — Standardized, extraction-first "setup" phase
+- **Decision:** The front of the workflow is **extraction-first and standardized**: import
+  assemblies → extract a *standard gene set* from every assembly (rDNA via ITSx; conserved
+  coding markers via protein-guided Exonerate; anonymous markers via primers), *independent of
+  whether comparison references exist* — these are the user's own data and GenBank submissions.
+  Only afterward does a dedicated **Reference Taxa / Tips** stage bring in comparison sequences
+  and assess per-locus availability for tree-building. Key design choices:
+  (1) **Bundled protein guides** ship with the package as a *universal core* (≥1 Ascomycota +
+  ≥1 Basidiomycota full-length protein per conserved marker — these markers are conserved
+  kingdom-wide, so `protein2genome` extracts them anywhere) **plus swappable lineage packs** for
+  clade-specific markers (Alt a1, OPA10-2, … are *not* universal). (2) **Extraction guides
+  (protein) are stored and conceived separately from tree tips (nucleotide amplicons)** — never
+  mixed in one locus file (cf. D-018). (3) The tips importer **auto-classifies pasted accessions
+  to loci** via the synonym catalogue (D-011). (4) Tree-locus selection is its **own page**,
+  separate from tips import. (5) **GenBank submission export** is a final, optional step.
+  (6) Everything is tracked in the **project manifest** so a re-opened project is self-describing.
+- **Why:** The user (and the package's broader users) want a reproducible, genus-agnostic setup
+  that yields a consistent marker set regardless of reference availability, and a clear record of
+  what's been done across sessions. Decoupling "what I extracted" from "what I can compare
+  against" matches real practice (missing reference data per taxon/locus is normal) and makes the
+  extractions standalone-valuable (GenBank deposits). Bundled universal guides remove per-project
+  guide-fetching; lineage packs preserve flexibility beyond Alternaria. Backed by published
+  precedent (UnFATE, Syst. Biol. 2025; Feau et al. 2011) — see `docs/method_references.md`.
+- **Alternatives considered:** (a) Fetch guides per project per taxon — rejected (repeated work,
+  no standard set). (b) One universal guide per locus — kept option open, but ≥1 Asco + ≥1 Basidio
+  improves robustness on divergent targets. (c) Tips + guides in one reference store — rejected
+  (protein/nucleotide mix breaks model selection, D-018). (d) Reference-availability-first (fetch
+  refs before extracting) — rejected in favour of extraction-first.
+- **Status:** active. Roadmap = **RM-008**; building component 1 (bundled protein guides) first.
