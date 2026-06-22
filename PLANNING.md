@@ -173,6 +173,21 @@ user's decisions in that session.
     Analysis pages renumbered (Alignment 8 · BUSCO 9 · Tree 10). 6 classifier tests.
     **Deferred:** target-taxa search mode (≥3/locus review) + the availability matrix + tree-set
     page. Next: component 2 (tips → CDS → MACSE) ties tips into the alignment.
+  - _(2026-06-22) Component 2 (Exonerate amplicon-tip processing → frame-consistent CDS) **done**
+    (D-022):_ new single-purpose page `pages/8_Codon_Tip_Prep.py` + `codon_prep_utils.py` run each
+    coding-locus tip through the bundled protein guide (Exonerate `protein2genome`) and **merge the
+    framed tips with the user's extracted isolate loci** into three per-locus matrices in
+    `<output>/loci/with_tips/`: CDS (intron-stripped, codon-phased), genomic (full gene, exons
+    UPPER / introns lower for boundary visibility), protein. References are treated identically to
+    the user's own sequences (raw full gene **and** intron-stripped CDS). **Runs no aligner, no new
+    dependency** beyond Exonerate; alignment + by-hand codon-structure curation stay on Alignment
+    Prep (MACSE/AliView/Geneious are optional companions, never assumed — see D-022). rDNA tips
+    bypass to MAFFT; write-and-flag QC; provenance to `workflow.steps.codon_prep`. Analysis pages
+    renumbered (**Alignment 9 · BUSCO 10 · Tree 11**). 16 tests → **266 passing**. _Refined from the
+    original "→ MACSE" wording per the user:_ the page stops at codon-ready matrices and never
+    assumes MACSE (every alignment is hand-checked); back-translation was considered and dropped as
+    a built-in. **Still deferred (RM-008):** components 4 (availability matrix), 5 (tree-set page),
+    6 (GenBank submission export), and the target-taxa tips search mode.
 
 ### Review findings — risk register (2026-06-18)
 

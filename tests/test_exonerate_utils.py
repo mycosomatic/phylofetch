@@ -24,6 +24,7 @@ from phylofetch.exonerate_utils import (
     extract_locus_exonerate,
     parse_exonerate_gff,
     select_best_model,
+    soft_mask_genomic,
     validate_cds,
 )
 
@@ -206,6 +207,33 @@ class TestBuildResultFromModel:
         models = parse_exonerate_gff(_fix("exo_protein2genome_plus.gff"))
         res = build_result_from_model(models[0], contig_plus, "ST1", "TEF1")
         assert res["query_coverage"] == pytest.approx(100.0)
+
+    @pytest.mark.parametrize("tag,contig_fix", [("plus", "contig_plus"),
+                                                ("minus", "contig_minus")])
+    def test_genomic_amplicon_is_soft_masked(self, tag, contig_fix, request):
+        # The genomic product is exon-UPPER / intron-lower so isolates and tips carry the same
+        # boundary annotation (D-022). Bases/length are unchanged; only case differs.
+        contig = request.getfixturevalue(contig_fix)
+        res = build_result_from_model(
+            parse_exonerate_gff(_fix(f"exo_protein2genome_{tag}.gff"))[0], contig, "ST1", "TEF1")
+        amp = res["amplicon_seq"]
+        assert len(amp) == res["amplicon_length"]
+        assert sum(c.islower() for c in amp) == res["introns"][0]["length"]   # introns masked
+        assert sum(c.isupper() for c in amp) == res["cds_length"]             # exons unmasked
+
+
+class TestSoftMaskGenomic:
+    def test_plus_lowercases_intron_span(self):
+        # intron at 1-based positions 4..6 of a 12-mer
+        assert soft_mask_genomic("AAACCCGGGTTT", 1, 12, [(4, 6)], False) == "AAAcccGGGTTT"
+
+    def test_minus_strand_preserves_case_through_revcomp(self):
+        out = soft_mask_genomic("AAACCCGGGTTT", 1, 12, [(4, 6)], True)
+        assert sum(c.islower() for c in out) == 3
+        assert out.upper() == str(Seq("AAACCCGGGTTT").reverse_complement())
+
+    def test_empty_span_returns_empty(self):
+        assert soft_mask_genomic("ACGT", 0, 0, [], False) == ""
 
 
 # ── End-to-end (requires the exonerate binary) ─────────────────────────────

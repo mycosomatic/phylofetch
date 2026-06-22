@@ -554,3 +554,68 @@ Format for each entry:
   root is simpler.
 - **Status:** active. `project_output_dir` / `set_output_dir` + manifest `output_dir` field +
   page wiring + Manage Data UI; 4 tests → 244 passing.
+
+### D-022 (2026-06-22) — Codon Tip Prep: frame comparison tips into codon-ready CDS (the manual-Mesquite step, automated)
+- **Decision:** Add **RM-008 component 2** as a new **single-purpose page "8 · Codon Tip Prep"**
+  + module `src/phylofetch/codon_prep_utils.py`. It runs each **coding-locus comparison tip**
+  (imported on the Reference Taxa page) through the **same bundled protein guide** used for
+  extraction (D-020) with Exonerate `protein2genome` — stripping introns, pinning the reading
+  frame to the guide ORF, and orienting to the coding strand — then **merges the framed tips with
+  the user's already-extracted isolate loci** into three per-coding-locus matrices written to
+  **`<output>/loci/with_tips/`**:
+  (1) `<locus>_CDS_combined.fasta` — intron-stripped, **codon-phased** CDS;
+  (2) `<locus>_genomic_combined.fasta` — the **full gene** (exons + introns, oriented), written
+  **exons UPPERCASE / introns lowercase** so the exon-intron boundaries stay visible — and move
+  with the gaps — during by-hand alignment; (3) `<locus>_protein_combined.fasta` — the
+  translation. References are thus **treated exactly as the user's own sequences** (both the raw
+  full gene and the intron-stripped CDS). The genomic soft-masking is applied at the **single
+  source** — `exonerate_utils.soft_mask_genomic`, called inside `build_result_from_model` — so
+  the user's **own extracted genomic loci carry the identical exon-upper / intron-lower
+  annotation** (homogeneity, on the user's request); the relaxed-BLAST genomic, which has no
+  intron model, stays plain uppercase. The page **runs no aligner** and adds **no dependency
+  beyond Exonerate** (already required for extraction). **rDNA tips (ITS/LSU/SSU) are out of
+  scope** (no protein guide → straight to MAFFT). QC is **write-and-flag** by default
+  (D-007/D-008); `strict_qc` excludes frameshift / internal-stop CDS; a tip that cannot be aligned
+  to the guide at all is **reported, not silently dropped**. An optional toggle alternates
+  exon case in the CDS to mark exon junctions. Provenance is a **new manifest step**
+  `workflow.steps.codon_prep`. Analysis pages renumbered: **Alignment Prep → 9, BUSCO → 10,
+  Tree → 11**.
+- **Why:** Fungal coding-marker tips on GenBank are overwhelmingly **partial-CDS *genomic*
+  barcodes** — they carry introns, sit in an arbitrary reading frame, and may be on either strand
+  (the D-017 finding). You cannot codon-align those against the isolates' intron-free, frame-safe
+  CDS as-is; historically a researcher fixes each one **by hand in Mesquite** (strip introns, find
+  the frame, orient). Re-using the established Exonerate spliced-alignment path against the bundled
+  cross-fungal protein guide automates exactly that, deterministically and with provenance, and it
+  is the published pattern (UnFATE, Syst. Biol. 2025: extract CDS via protein alignment → MACSE
+  codon align; `docs/method_references.md`). The user's three explicit constraints shaped the rest:
+  (a) **references = isolate sequences** → emit both the full gene and the CDS for tips, same as
+  isolates; (b) **do not assume MACSE; every alignment is hand-checked** → the page produces plain,
+  inspectable, codon-phased files and states clearly that codon structure must be preserved by a
+  codon-aware aligner *or* by hand (a plain nucleotide aligner does **not** guarantee it), with
+  MACSE/AliView/Geneious as **optional companions, never dependencies**; (c) **minimise programs
+  that can break** → no new external tool, standard FASTA + the extraction GFF3 (Geneious-importable
+  as an exon/intron track), and the case soft-masking so boundaries are visible in any editor with
+  zero extra tooling.
+- **Alternatives considered:** (a) **Build back-translation in** (align proteins, stencil the gap
+  pattern onto the CDS — PAL2NAL / TranslatorX) — rejected as a built-in: it adds a dependency,
+  assumes clean ORFs, and the user will hand-inspect regardless; the translated-protein FASTA is
+  still emitted so the user can do this externally if they choose. (b) **Run MACSE inline / make it
+  the path** — rejected: MACSE is a manual-JAR, academic-only companion and must not be assumed
+  (user). (c) **Put it on the Tips page or inside Alignment Prep** — rejected: the user wants each
+  page single-purpose; alignment stays page 9's job. (d) **Mask only the tips, leaving isolates to
+  their per-strain GFF3** — rejected on the user's request for homogeneity (2026-06-22): the
+  soft-masking is applied at the single source (`soft_mask_genomic` inside
+  `build_result_from_model`), so the user's own extracted genomic loci and the tips are masked
+  identically, with no re-running. (e) **One Exonerate call per locus (multi-target) instead of
+  per-tip** — deferred: per-tip framing is simpler and fully transparent, and tip counts are
+  small; revisit if it becomes slow.
+- **Status:** active. Implemented 2026-06-22. `codon_prep_utils.py` (`exon_marked_cds`,
+  `frame_consistent_amplicon`, `coding_loci_with_tips`, `prepare_codon_locus`) reuses the tested
+  Exonerate primitives (no new science); the genomic soft-masking lives in
+  `exonerate_utils.soft_mask_genomic` (called by `build_result_from_model`) so the isolate
+  extraction path is masked too — **verified end-to-end** (synthetic gene, plus/minus: isolate
+  `TEF1_genomic.fasta` introns lowercased, CDS unchanged). Tests: 16 in
+  `tests/test_codon_prep_utils.py` + masking moved to `tests/test_exonerate_utils.py`
+  (`TestSoftMaskGenomic` + a `build_result_from_model` masked-genomic check) → **266 passing**
+  (was 250). New page render-verified (executes top-to-bottom against a streamlit stub; AppTest
+  unavailable in this checkout). **RM-008 component 2 done.**

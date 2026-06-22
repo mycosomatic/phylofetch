@@ -55,6 +55,37 @@ and Evolution 35(10):2582–2584.
 - DOI: https://doi.org/10.1093/molbev/msy159
 - Open copy: https://pmc.ncbi.nlm.nih.gov/articles/PMC6188553/
 
+### ⚠️ Codon-structure-preserving alignment & by-hand curation (Codon Tip Prep companions, D-022)
+phylofetch's Codon Tip Prep page (D-022) frames comparison tips into intron-free, frame-pinned
+CDS so they line up codon-by-codon with the extracted isolate loci. It runs **no aligner** and is
+agnostic to how you align/curate afterwards. Codon structure must be preserved either by a
+**codon-aware aligner** or **by hand** — a plain nucleotide aligner (e.g. MAFFT on CDS) does not
+guarantee it. Options (all optional companions, none a phylofetch dependency):
+- **MACSE v2** — codon-aware, models frameshifts/stops (cited above); best for messy ORFs.
+- **Translate → align AA → back-translate** (gap pattern from the protein alignment stamped onto
+  the *original* nucleotides, gaps forced onto codon boundaries; no nucleotides invented):
+  - ⚠️ **PAL2NAL** — Suyama M, Torrents D, Bork P (2006). *PAL2NAL: robust conversion of protein
+    sequence alignments into the corresponding codon alignments.* Nucleic Acids Res 34:W609–W612.
+    DOI: https://doi.org/10.1093/nar/gkl315
+  - ⚠️ **TranslatorX** — Abascal F, Zardoya R, Telford MJ (2010). *TranslatorX: multiple alignment
+    of nucleotide sequences guided by amino acid translations.* Nucleic Acids Res 38:W7–W13.
+    DOI: https://doi.org/10.1093/nar/gkq291
+- **Interactive frame-aware editors** (Mesquite alternatives that show the live AA translation so
+  reading frame is visible while editing):
+  - ⚠️ **AliView** — Larsson A (2014). *AliView: a fast and lightweight alignment viewer and editor
+    for large datasets.* Bioinformatics 30(22):3276–3278. DOI:
+    https://doi.org/10.1093/bioinformatics/btu531
+  - ⚠️ **SeaView** — Gouy M, Guindon S, Gascuel O (2010). *SeaView version 4.* Molecular Biology
+    and Evolution 27(2):221–224. DOI: https://doi.org/10.1093/molbev/msp259
+  - ⚠️ **Jalview** — Waterhouse AM, Procter JB, Martin DMA, Clamp M, Barton GJ (2009). *Jalview
+    Version 2.* Bioinformatics 25(9):1189–1191. DOI: https://doi.org/10.1093/bioinformatics/btp033
+- Boundary aids carried into the alignment with **no extra tooling**: the full-gene FASTA is
+  written exons-UPPER / introns-lower (case is inert to the aligners/tree tools but visible in any
+  editor and tracks the sequence as gaps move); the per-sequence GFF3 from extraction imports into
+  Geneious as an exon/intron feature track. (NB: intron positions are not always homologous across
+  taxa — intron gain/loss — so per-sequence case-masking is the honest representation, not a single
+  reference ruler.)
+
 ### ✅ Exonerate (protein-to-genome / spliced alignment)
 Slater GSC, Birney E (2005). *Automated generation of heuristics for biological sequence
 comparison.* BMC Bioinformatics 6:31.

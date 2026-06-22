@@ -39,7 +39,9 @@ PROJECT_SUBDIRS = ("metadata", "runs", "results", "scratch", "logs")
 PROJECT_MANIFEST_SCHEMA_VERSION = 2
 
 # Ordered extraction steps the Workflow page chains, and the status vocabulary each may hold.
-WORKFLOW_STEPS = ("references", "rDNA", "coding", "primers", "combine")
+# ``codon_prep`` (RM-008 component 2, D-022) frames comparison tips into codon-ready CDS +
+# full-gene + protein matrices; it runs after the extraction steps and before alignment.
+WORKFLOW_STEPS = ("references", "rDNA", "coding", "primers", "codon_prep", "combine")
 STEP_STATUSES = ("pending", "running", "done", "error", "skipped")
 
 # How an assembly's taxon was assigned (D-012): typed by the user, or picked from the

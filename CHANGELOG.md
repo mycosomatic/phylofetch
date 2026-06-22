@@ -3,6 +3,40 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-22
+
+- **Codon Tip Prep — frame comparison tips into codon-ready CDS (D-022 / RM-008 component 2).**
+  The "manual-Mesquite step", automated. New single-purpose page `pages/8_Codon_Tip_Prep.py` +
+  `src/phylofetch/codon_prep_utils.py`: each coding-locus comparison tip (imported on Reference
+  Taxa) is run through the **same bundled protein guide** as extraction (Exonerate
+  `protein2genome`) — introns stripped, reading frame pinned to the guide ORF, strand oriented —
+  then **merged with the user's extracted isolate loci** into three per-locus matrices in
+  `<output>/loci/with_tips/`:
+  - `<locus>_CDS_combined.fasta` — intron-stripped, **codon-phased** CDS;
+  - `<locus>_genomic_combined.fasta` — the **full gene** (exons + introns, oriented), written
+    **exons UPPERCASE / introns lowercase** so exon-intron boundaries stay visible — and track the
+    sequence as gaps are inserted — during by-hand alignment (case is inert to MAFFT/MACSE/trimAl/
+    IQ-TREE; bases unchanged). The masking is centralized in new `exonerate_utils.soft_mask_genomic`
+    (called by `build_result_from_model`), so the **Exonerate *extraction* path now also writes
+    soft-masked genomic** — the user's own loci (`<locus>_genomic.fasta`) and the reference tips
+    are annotated identically (per user request for homogeneity; verified plus/minus). Optional
+    toggle alternates exon case in the CDS to mark junctions too;
+  - `<locus>_protein_combined.fasta` — the translation (AA tree / hand-align guide).
+  References are treated **exactly as the user's own sequences** (raw full gene **and** CDS). The
+  page **runs no aligner and adds no dependency** beyond Exonerate; alignment + codon-structure
+  curation stay on Alignment Prep, with a clear caveat that a plain nucleotide aligner does **not**
+  preserve reading frame — use a codon-aware aligner (MACSE if its JAR is installed) **or** hand-
+  align (AliView / SeaView / Geneious as optional companions, never required). rDNA tips
+  (ITS/LSU/SSU) are non-coding → skip this step (straight to MAFFT). QC is **write-and-flag**
+  (`strict_qc` excludes frameshift / internal-stop tips); a tip that can't be aligned to the guide
+  is reported, not dropped. Provenance → new manifest step `workflow.steps.codon_prep` (added to
+  `WORKFLOW_STEPS`; Workflow page chains it after coding). **Analysis pages renumbered:**
+  Alignment Prep → **9**, BUSCO → **10**, Tree → **11**. No new science — reuses the tested
+  Exonerate primitives. Tests: 16 (`tests/test_codon_prep_utils.py` — offline rendering/
+  orchestration + an exonerate-binary-guarded end-to-end) → **266 passing** (was 250). Page
+  render-verified (executes top-to-bottom against a streamlit stub; AppTest env not present in this
+  checkout).
+
 ## 2026-06-21
 
 - **Reference Taxa / Tips page (D-020 / RM-008 component 3).** New `pages/7_Reference_Taxa.py`

@@ -319,6 +319,33 @@ def validate_cds(cds_seq: str, geneticcode: int = 1) -> dict:
     }
 
 
+# ── Genomic soft-masking (exon/intron boundary annotation) ──────────────────
+
+def soft_mask_genomic(contig_seq: str, g_min: int, g_max: int,
+                      intron_coords: list[tuple[int, int]], is_minus: bool) -> str:
+    """
+    The genomic gene span ``contig_seq[g_min..g_max]`` (1-based, inclusive), oriented to the
+    coding strand and written **exons UPPERCASE / introns lowercase**.
+
+    Soft-masking the introns by case carries Exonerate's exon/intron boundaries into the
+    sequence itself, so they stay visible — and pinned to the right bases as gaps are inserted —
+    when the gene is aligned/curated by hand, while remaining inert to aligners and tree tools
+    (nucleotide case is ignored). Used for every Exonerate genomic product so the user's own
+    extracted loci and the comparison tips are annotated identically (D-022). Returns "" for an
+    empty/invalid span; Biopython's reverse_complement preserves case, so the masking survives
+    the minus-strand flip.
+    """
+    if g_min <= 0 or g_max <= 0 or g_max < g_min:
+        return ""
+    chars = [c.upper() for c in contig_seq[g_min - 1:g_max]]
+    for s, e in intron_coords:
+        lo, hi = (s, e) if s <= e else (e, s)
+        for p in range(max(lo, g_min), min(hi, g_max) + 1):
+            chars[p - g_min] = chars[p - g_min].lower()
+    seq = "".join(chars)
+    return str(Seq(seq).reverse_complement()) if is_minus else seq
+
+
 # ── Build the shared result dict from an Exonerate model ────────────────────
 
 def build_result_from_model(
@@ -367,10 +394,11 @@ def build_result_from_model(
         })
     cds_seq = "".join(cds_parts).upper()
 
-    # Genomic gene span (exons + introns).
+    # Genomic gene span (exons + introns), soft-masked: exons UPPERCASE / introns lowercase so
+    # the boundaries are visible for by-hand alignment (case is inert to aligners/tree tools).
     g_min = model["gene_start"] or min((e["g_start"] for e in exons), default=0)
     g_max = model["gene_end"] or max((e["g_end"] for e in exons), default=0)
-    amplicon = _oriented(contig_seq[g_min - 1:g_max]).upper()
+    amplicon = soft_mask_genomic(contig_seq, g_min, g_max, model["introns"], is_minus)
 
     # Introns: Exonerate gives them explicitly (no gap inference needed).
     introns: list[dict] = []

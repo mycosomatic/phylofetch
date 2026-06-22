@@ -54,7 +54,11 @@ phylofetch/
 │   ├── itsx_utils.py
 │   ├── ncbi_utils.py
 │   ├── primer_utils.py
-│   └── project_manager.py # RunManager, tool version probing
+│   ├── project_manager.py # RunManager, tool version probing, project manifest
+│   ├── protein_guide_utils.py # bundled protein guides → protein2genome (D-020 / RM-008 c1)
+│   ├── codon_prep_utils.py # tips → frame-consistent CDS + full-gene + protein (D-022 / RM-008 c2)
+│   ├── taxon_id_utils.py  # ITS→remote BLAST provisional taxon ID (D-014)
+│   └── tips_utils.py      # comparison-tip import + locus auto-classification (D-020 / RM-008 c3)
 ├── pages/                 # Streamlit multi-page app (component-page workflow, D-012)
 │   ├── 0_Project_Setup.py
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
@@ -64,9 +68,10 @@ phylofetch/
 │   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
 │   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)
 │   ├── 7_Reference_Taxa.py     # tree tips: paste accessions → auto-classify to locus (D-020)
-│   ├── 8_Alignment_Prep.py
-│   ├── 9_BUSCO_Phylogenomics.py
-│   └── 10_Tree_Visualization.py
+│   ├── 8_Codon_Tip_Prep.py     # frame coding tips → codon-ready CDS+gene+protein matrices (D-022)
+│   ├── 9_Alignment_Prep.py
+│   ├── 10_BUSCO_Phylogenomics.py
+│   └── 11_Tree_Visualization.py
 │   # NB: the old monolithic 2_Loci_Extraction.py was retired 2026-06-20 (D-016);
 │   # its logic lives in src/ (extract_locus*, run_itsx, run_primer_extraction).
 ├── tests/
@@ -75,6 +80,7 @@ phylofetch/
 │   ├── test_blast_loci_utils.py  # MUST cover LXD-002 regression
 │   ├── test_itsx_utils.py        # MUST cover LXD-001 fixes
 │   ├── test_exonerate_utils.py   # parser/QC/build offline + binary-guarded E2E (D-008)
+│   ├── test_codon_prep_utils.py  # soft-mask/merge offline + binary-guarded E2E (D-022)
 │   └── fixtures/                 # verbatim exonerate 2.4.0 output + synthetic gene
 ├── app.py                 # streamlit run app.py
 ├── pyproject.toml
@@ -146,7 +152,7 @@ per-project (`<project>/references`, D-013) and extraction outputs are per-proje
 - **Models**: `protein2genome` (protein query) / `coding2genome` (nucleotide CDS query), via `MODEL_FOR_QUERYTYPE` keyed on `detect_fasta_type`.
 - **Parsing**: `parse_exonerate_gff` reads verbatim `--showtargetgff yes` GFF (one result per `START…END OF GFF DUMP` block) + a `--ryo` line whose `%tcs` is the authoritative spliced CDS (cross-checked against the coord-rebuilt CDS). Exonerate emits introns + splice5/splice3 explicitly (no gap inference). `--bestn N` surfaces paralogs (`select_best_model` returns `(best, others)`).
 - **QC (RM-002)**: `validate_cds` reports reading-frame (`len % 3`), internal-stop count, translation; the per-locus log records a PASS/REVIEW verdict and GT-AG tally. Default = write-and-flag; `strict_qc=True` rejects internal-stop / frameshift CDS (D-007: don't silently drop partial/type seqs).
-- **Outputs**: `LOCUS_CDS/protein/genomic/introns.fasta`, `LOCUS.gff3`, `LOCUS_partition.nex`, `LOCUS_extraction.log` (GFF3 + partition writers reused from `blast_loci_utils`).
+- **Outputs**: `LOCUS_CDS/protein/genomic/introns.fasta`, `LOCUS.gff3`, `LOCUS_partition.nex`, `LOCUS_extraction.log` (GFF3 + partition writers reused from `blast_loci_utils`). `LOCUS_genomic.fasta` is **soft-masked** — exons UPPERCASE / introns lowercase via `soft_mask_genomic` (D-022), the same annotation the Codon Tip Prep page applies to reference tips.
 - **Gene of interest**: the Run-Extraction page also accepts an arbitrary pasted/uploaded ortholog (protein or CDS) → returns just the CDS + exon model, sharing the same logged code path as catalogue loci.
 - **Provenance**: Exonerate runs route through RunManager (`run_exonerate`, `tool_version_keys=["exonerate"]`). Install via `conda install -c bioconda exonerate` (also pinned in `environment.yml`).
 

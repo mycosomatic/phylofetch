@@ -40,9 +40,10 @@ st.caption(f"📁 Project: `{Path(project_dir).name}`"
 
 # Named strategies = ordered recipes over the manifest's workflow steps.
 STRATEGIES = {
-    "Fungal barcodes (ITSx + Exonerate)": ["references", "rDNA", "coding"],
+    "Fungal barcodes (ITSx + Exonerate)": ["references", "rDNA", "coding", "codon_prep"],
     "Primers only (in-silico PCR)": ["primers"],
-    "Everything (rDNA + coding + primers)": ["references", "rDNA", "coding", "primers"],
+    "Everything (rDNA + coding + primers)": ["references", "rDNA", "coding", "primers",
+                                             "codon_prep"],
 }
 STEP_INFO = {
     "references": ("📚 NCBI References", "pages/2_NCBI_References.py",
@@ -53,6 +54,9 @@ STEP_INFO = {
                "Frame-safe CDS for protein-coding loci (or relaxed BLAST amplicon)."),
     "primers": ("🔬 Primers", "pages/5_Primers.py",
                 "In-silico PCR amplicons (no references needed)."),
+    "codon_prep": ("🔡 Codon Tip Prep", "pages/8_Codon_Tip_Prep.py",
+                   "Frame comparison tips into codon-ready CDS + full-gene matrices "
+                   "(needs tips imported on Reference Taxa first)."),
 }
 BADGE = {"pending": "⬜ pending", "running": "🟡 running", "done": "✅ done",
          "error": "❌ error", "skipped": "➖ skipped"}
@@ -109,7 +113,8 @@ if combos:
     for p in combos:
         st.write(f"✅ `{p.name}`")
     _link("pages/7_Reference_Taxa.py", "Add comparison taxa / tips →")
-    _link("pages/8_Alignment_Prep.py", "Continue to Alignment Prep →")
+    _link("pages/8_Codon_Tip_Prep.py", "Frame tips → codon-ready CDS →")
+    _link("pages/9_Alignment_Prep.py", "Continue to Alignment Prep →")
 else:
     st.caption("No combined FASTAs yet — run the extraction steps above. They appear in "
                f"`{str(combined_dir).replace(str(Path.home()), '~')}`.")

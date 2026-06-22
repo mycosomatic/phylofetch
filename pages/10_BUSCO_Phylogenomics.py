@@ -1,5 +1,5 @@
 """
-pages/4_BUSCO_Phylogenomics.py
+pages/10_BUSCO_Phylogenomics.py
 -------------------------------
 Genome-comparison BUSCO / Compleasm workflow:
 
