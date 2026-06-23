@@ -5,6 +5,23 @@
 
 ## 2026-06-23
 
+- **Nucleotide fallback for intron-rich barcode tips — Codon Tip Prep (D-027).** Diagnosed why all
+  25 TEF1 comparison tips produced an isolates-only matrix: the standard fungal TEF1 barcode
+  (EF1-728F/986R, ~240 bp) is largely **intronic** — a tip matches the isolate *genomic* gene
+  continuously (86%) but has **no hit against the intron-stripped CDS**, so `protein2genome` finds no
+  model (0/25 framed vs 24/24 for the longer, exon-rich RPB2 amplicons), even with a near-identical
+  *Alternaria* guide.
+  - `codon_prep_utils`: `orient_amplicon` (blastn the tip vs the isolate genomic → confirm locus +
+    orient strand); `prepare_codon_locus` gains `blastn_bin` / `nt_fallback` / `n_nt_only` and, for
+    un-framable tips that orient, writes them to the **genomic** matrix only, flagged
+    `[framed=no] [nucleotide_only=yes]`. CDS/protein stay isolate-only for that locus; a tip that
+    orients to nothing is reported, not included.
+  - `pages/8_Codon_Tip_Prep.py`: nucleotide-fallback toggle, blastn tool-check, "Nucleotide-only"
+    overview column + per-tip product/strand detail.
+  - Verified on the project's TEF1 tips: genomic matrix 7 → 32 (7 isolates + 25 oriented tips). The
+    published TEF1 phylogenies align introns too, so this is the right output for these markers. +6
+    tests → **286 passing** (was 280).
+
 - **Guide-length sanity filter — reject mis-annotated over-long references (D-025).** A real run
   (project *Alternaria_Final*) produced **TEF1 813 aa** (EF1-α ≈ 460) and **TUB2 864 aa**
   (β-tubulin ≈ 447) CDS, with 5/7 strains frameshifted. Root cause: in "Bundled + project

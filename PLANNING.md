@@ -191,6 +191,13 @@ user's decisions in that session.
 
 ### Architecture refinements (not numbered RM items)
 
+- _(2026-06-23) **Codon Tip Prep: nucleotide fallback for intron-rich barcodes** (D-027)._ The
+  standard fungal TEF1 barcode amplifies a largely **intronic** region (matches the genomic gene but
+  not the CDS), so `protein2genome` can't codon-frame it — 0/25 TEF1 tips framed vs 24/24 RPB2. Such
+  tips are now oriented (blastn vs the isolate genomic) and added to the **genomic** matrix only,
+  flagged nucleotide-only, so the intron-inclusive tree still carries them; CDS/protein stay
+  isolate-only for that locus. This is a partial, locus-appropriate realization of the
+  orthology-vs-tips idea below (the blastn orient step also confirms the tip belongs to the locus).
 - _(2026-06-23) **Reference-quality QC: guide-length filter** (D-025)._ A real coding run exposed
   that fetched taxon-closer Alternaria RefSeq proteins can be **mis-annotated over-long** (an 865-aa
   "partial β-tubulin", 812–814-aa EF1-α) and, being high-identity, out-score the correct guides in

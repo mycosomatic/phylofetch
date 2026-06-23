@@ -26,7 +26,9 @@ from phylofetch.codon_prep_utils import (
     coding_loci_with_tips,
     exon_marked_cds,
     frame_consistent_amplicon,
+    orient_amplicon,
     prepare_codon_locus,
+    _nt_tip_seqrecord,
     _tip_seqrecord,
 )
 from phylofetch.exonerate_utils import build_result_from_model, parse_exonerate_gff
@@ -34,6 +36,7 @@ from phylofetch.ncbi_utils import locus_ref_fasta
 
 FIX = Path(__file__).parent / "fixtures"
 HAVE_EXONERATE = shutil.which("exonerate") is not None
+HAVE_BLASTN = shutil.which("blastn") is not None
 
 
 def _read1(path: Path) -> str:
@@ -154,6 +157,103 @@ class TestPrepareCodonLocus:
         assert strict["n_framed"] == 1 and strict["n_flagged"] == 1
         ids = {r.id for r in SeqIO.parse(strict["outputs"]["CDS"], "fasta")}
         assert ids == {"GOOD"} and "BAD" not in ids
+
+
+# ── Nucleotide fallback for un-framable (intronic) tips (D-027) ────────────────
+
+def _fake_framer_fail(fail_ids):
+    """Framer stand-in that returns no model for `fail_ids`, else a clean framed record."""
+    base = _fake_framer({})
+
+    def _fake(seq, seq_id, guide_fasta, locus, **kw):
+        if seq_id in fail_ids:
+            return None, "no gene model (amplicon does not align to the guide for this locus)"
+        return base(seq, seq_id, guide_fasta, locus, **kw)
+    return _fake
+
+
+def _iso_combined(tmp_path):
+    """Write a minimal isolate combined dir (one isolate per product)."""
+    iso = tmp_path / "combined"
+    iso.mkdir()
+    for prod in ("CDS", "genomic", "protein"):
+        SeqIO.write([SeqRecord(Seq("ATGAAA"), id=f"ST1_TEF1_{prod}", description="")],
+                    str(iso / f"TEF1_{prod}_combined.fasta"), "fasta")
+    return iso
+
+
+class TestNucleotideFallback:
+    def test_unframable_tip_goes_to_genomic_only(self, tmp_path, monkeypatch):
+        tips = tmp_path / "tips"
+        _write_tips(tips, "TEF1", {"FRAMES": "ACGTACGT", "INTRONIC": "ACGTACGTAC"})
+        iso = _iso_combined(tmp_path)
+        monkeypatch.setattr(cp, "frame_consistent_amplicon", _fake_framer_fail({"INTRONIC"}))
+        # avoid needing a real blastn / isolate match: stub orientation
+        monkeypatch.setattr(cp, "orient_amplicon",
+                            lambda seq, sid, ref, **kw: (seq.upper(), "plus", 90.0, len(seq)))
+
+        out = prepare_codon_locus("TEF1", tips, tmp_path / "out", isolate_combined_dir=iso)
+        assert out["n_framed"] == 1 and out["n_nt_only"] == 1 and out["n_failed"] == 0
+
+        # genomic = isolate + framed + nt-only; CDS/protein = isolate + framed (no nt-only)
+        gen = list(SeqIO.parse(out["outputs"]["genomic"], "fasta"))
+        cds = list(SeqIO.parse(out["outputs"]["CDS"], "fasta"))
+        assert {r.id for r in gen} == {"ST1_TEF1_genomic", "FRAMES", "INTRONIC"}
+        assert {r.id for r in cds} == {"ST1_TEF1_CDS", "FRAMES"}        # INTRONIC excluded
+        nt = next(r for r in gen if r.id == "INTRONIC")
+        assert "[nucleotide_only=yes]" in nt.description and "[framed=no]" in nt.description
+        row = next(r for r in out["rows"] if r["id"] == "INTRONIC")
+        assert row["verdict"] == "NT-ONLY" and row["included"] and row["product"] == "genomic (nt)"
+
+    def test_no_isolate_genomic_disables_fallback(self, tmp_path, monkeypatch):
+        tips = tmp_path / "tips"
+        _write_tips(tips, "TEF1", {"INTRONIC": "ACGTACGTAC"})
+        monkeypatch.setattr(cp, "frame_consistent_amplicon", _fake_framer_fail({"INTRONIC"}))
+        # no isolate_combined_dir → nothing to orient against → fallback off
+        out = prepare_codon_locus("TEF1", tips, tmp_path / "out", include_isolates=False)
+        assert out["n_nt_only"] == 0 and out["n_failed"] == 1
+        row = next(r for r in out["rows"] if r["id"] == "INTRONIC")
+        assert row["verdict"] == "FAIL" and not row["included"]
+
+    def test_nt_fallback_can_be_disabled(self, tmp_path, monkeypatch):
+        tips = tmp_path / "tips"
+        _write_tips(tips, "TEF1", {"INTRONIC": "ACGTACGTAC"})
+        iso = _iso_combined(tmp_path)
+        monkeypatch.setattr(cp, "frame_consistent_amplicon", _fake_framer_fail({"INTRONIC"}))
+        out = prepare_codon_locus("TEF1", tips, tmp_path / "out",
+                                  isolate_combined_dir=iso, nt_fallback=False)
+        assert out["n_nt_only"] == 0 and out["n_failed"] == 1
+
+    def test_nt_tip_seqrecord_header(self):
+        rec = _nt_tip_seqrecord(
+            {"id": "KC1.1", "organism": "Alternaria sp.", "genomic": "ACGT",
+             "strand": "minus", "pident": 88.0, "aln_len": 240, "tip_len": 244}, "TEF1")
+        assert rec.id == "KC1.1" and str(rec.seq) == "ACGT"
+        for token in ("[tip=yes]", "[nucleotide_only=yes]", "[framed=no]", "[type=genomic]"):
+            assert token in rec.description
+
+
+@pytest.mark.skipif(not HAVE_BLASTN, reason="blastn not installed")
+class TestOrientAmpliconE2E:
+    def test_orients_and_confirms_locus(self, tmp_path):
+        # Use the complex synthetic-gene fixture as the isolate genomic; a sub-slice is the tip.
+        ref = _read1(FIX / "contig_plus.fasta")
+        ref_fa = tmp_path / "iso_genomic.fasta"
+        SeqIO.write([SeqRecord(Seq(ref), id="ST1_TEF1_genomic", description="")], str(ref_fa), "fasta")
+        amp = ref[100:300]                                 # a forward sub-amplicon
+
+        fwd = orient_amplicon(amp, "fwd", str(ref_fa))
+        assert fwd is not None and fwd[1] == "plus" and fwd[0] == amp
+
+        rev = orient_amplicon(str(Seq(amp).reverse_complement()), "rev", str(ref_fa))
+        assert rev is not None and rev[1] == "minus"
+        assert rev[0] == amp                               # reverse-complemented back to ref strand
+
+    def test_non_matching_returns_none(self, tmp_path):
+        ref_fa = tmp_path / "iso_genomic.fasta"
+        SeqIO.write([SeqRecord(Seq("ATGC" * 40), id="ST1_TEF1_genomic", description="")],
+                    str(ref_fa), "fasta")
+        assert orient_amplicon("GGGGCCCCAAAATTTT" * 4, "junk", str(ref_fa)) is None
 
 
 # ── End-to-end against the real exonerate binary ──────────────────────────────

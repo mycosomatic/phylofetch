@@ -40,8 +40,18 @@ Design constraints (from the user)
 * **rDNA loci (ITS/LSU/SSU) are out of scope** here — they are non-coding, have
   no protein guide, and go straight to MAFFT.
 * QC is **write-and-flag** by default (D-007/D-008); ``strict_qc`` excludes
-  frameshift / internal-stop CDS. A tip that cannot be aligned to the guide at
-  all is reported (not silently dropped) and left out of the matrices.
+  frameshift / internal-stop CDS.
+* **Nucleotide fallback (D-027):** some standard coding barcodes — fungal TEF1
+  (EF1-728F/986R) above all — amplify a largely **intronic** region: the tip
+  matches the genomic gene continuously but has almost no exon, so
+  ``protein2genome`` finds no model and it cannot be codon-framed. Rather than
+  drop it, such a tip is oriented (blastn vs the isolates' genomic, which also
+  confirms the locus) and written to the **genomic** matrix only, flagged
+  ``nucleotide_only`` — so the intron-inclusive tree still carries the
+  comparison taxon. The published phylogenies for these markers align the
+  introns too; the CDS/protein matrices stay isolate-only for that locus. A tip
+  that orients to nothing (wrong locus / contamination) is still reported, not
+  included.
 """
 
 from __future__ import annotations
@@ -55,7 +65,12 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
-from .blast_loci_utils import _build_description, detect_fasta_type
+from .blast_loci_utils import (
+    _build_description,
+    detect_fasta_type,
+    parse_blast_hsps,
+    run_blast,
+)
 from .exonerate_utils import (
     MODEL_FOR_QUERYTYPE,
     build_result_from_model,
@@ -171,6 +186,57 @@ def frame_consistent_amplicon(
     return record, status
 
 
+# ── Nucleotide fallback for un-framable (intronic / short) amplicons ──────────
+
+def orient_amplicon(
+    seq: str,
+    seq_id: str,
+    orient_ref_fasta: str,
+    *,
+    blastn_bin: str = "blastn",
+    min_pident: float = 65.0,
+    evalue: float = 1e-5,
+) -> Optional[tuple[str, str, float, int]]:
+    """
+    blastn ``seq`` against ``orient_ref_fasta`` (the isolates' genomic locus) to BOTH confirm the
+    amplicon belongs to this locus and orient it to the reference strand (D-027).
+
+    Returns ``(oriented_seq, strand, pident, aln_len)`` for the best HSP at ``>= min_pident``, or
+    ``None`` when nothing matches — a genuine failure (wrong locus / contamination), which is kept
+    out of the matrices rather than silently included. This is the path for the standard
+    intron-rich coding barcodes (e.g. fungal TEF1 EF1-728F/986R), which are largely **intronic**:
+    they match the genomic gene continuously but have almost no exon for ``protein2genome`` to
+    model, so they cannot be codon-framed — but they are still valid comparison data for the
+    **nucleotide** (intron-inclusive) tree.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        q = os.path.join(scratch, "amplicon.fasta")
+        SeqIO.write([SeqRecord(Seq(seq), id=seq_id, description="")], q, "fasta")
+        rc, _err, tsv = run_blast(q, orient_ref_fasta, scratch,
+                                  blast_bin=blastn_bin, task="blastn", evalue=evalue)
+        if rc != 0:
+            return None
+        hsps = [h for h in parse_blast_hsps(tsv) if h["pident"] >= min_pident]
+    if not hsps:
+        return None
+    best = max(hsps, key=lambda h: h["bitscore"])
+    oriented = seq if best["sstrand"] == "plus" else str(Seq(seq).reverse_complement())
+    return oriented, best["sstrand"], best["pident"], best["length"]
+
+
+def _nt_tip_seqrecord(nt: dict, locus: str) -> SeqRecord:
+    """Wrap a nucleotide-only (un-framed, oriented) tip for the **genomic** matrix only."""
+    desc = _build_description({
+        "tip": "yes", "locus": locus, "type": "genomic", "framed": "no",
+        "nucleotide_only": "yes", "organism": nt.get("organism", ""),
+        "amplicon_len": f"{nt['tip_len']}bp",
+        "orient": f"{nt['strand']} vs isolate genomic",
+        "orient_pident": f"{nt['pident']:.1f}",
+        "note": "intronic/short amplicon — not codon-framed",
+    })
+    return SeqRecord(Seq(nt["genomic"]), id=nt["id"], description=desc)
+
+
 def _tip_seqrecord(rec: dict, locus: str, product: str) -> SeqRecord:
     """Wrap a framed-tip product as a SeqRecord with a rich, NCBI-bracket header."""
     seq = {"CDS": rec["cds"], "genomic": rec["genomic"], "protein": rec["protein"]}[product]
@@ -212,11 +278,13 @@ def prepare_codon_locus(
     isolate_combined_dir=None,
     include_user_guides: bool = True,
     exonerate_bin: str = "exonerate",
+    blastn_bin: str = "blastn",
     minintron: int = 20,
     maxintron: int = 2000,
     geneticcode: int = 1,
     mark_exons: bool = False,
     strict_qc: bool = False,
+    nt_fallback: bool = True,
     manager=None,
 ) -> dict:
     """
@@ -225,12 +293,15 @@ def prepare_codon_locus(
 
     Returns a summary dict::
 
-      {locus, n_tips, n_framed, n_flagged, n_failed, n_isolates,
+      {locus, n_tips, n_framed, n_flagged, n_failed, n_nt_only, n_isolates,
        outputs: {CDS, genomic, protein},   # written file paths
-       rows: [ {id, organism, n_exons, n_introns, cds_length, verdict, included,
-                status}, ... ],            # one per tip, for the UI table
+       rows: [ {id, organism, n_exons, n_introns, cds_length, verdict, product,
+                included, status}, ... ],  # one per tip, for the UI table
        guide: <n guides used> or 0,
        status}
+
+    ``n_nt_only`` tips were not codon-framable (intronic/short amplicons) but oriented to the
+    isolate genomic and added to the **genomic** matrix as nucleotide-only (D-027).
 
     A locus with no protein guide is skipped (``status='no guide'``); a locus with
     no tips is skipped (``status='no tips'``).
@@ -238,7 +309,7 @@ def prepare_codon_locus(
     rows: list[dict] = []
     summary = {
         "locus": locus, "n_tips": 0, "n_framed": 0, "n_flagged": 0,
-        "n_failed": 0, "n_isolates": 0, "outputs": {}, "rows": rows,
+        "n_failed": 0, "n_nt_only": 0, "n_isolates": 0, "outputs": {}, "rows": rows,
         "guide": 0, "status": "ok",
     }
 
@@ -257,10 +328,21 @@ def prepare_codon_locus(
     meta = load_ref_meta(locus, ref_dir=tips_dir)
     os.makedirs(out_dir, exist_ok=True)
 
+    # Orientation reference for the nucleotide fallback: the isolates' genomic locus. A tip that
+    # cannot be codon-framed is oriented (and locus-confirmed) by blastn against this; with no
+    # isolate genomic there is nothing to orient against, so the fallback is disabled (D-027).
+    iso_dir = isolate_combined_dir if (include_isolates and isolate_combined_dir) else None
+    orient_ref = None
+    if nt_fallback and iso_dir:
+        cand = Path(iso_dir) / f"{locus}_genomic_combined.fasta"
+        if cand.exists() and cand.stat().st_size > 0:
+            orient_ref = str(cand)
+
     with tempfile.TemporaryDirectory() as gdir:
         guide_fasta = write_guide_fasta(locus, os.path.join(gdir, f"{locus}_guide.fasta"),
                                         include_user=include_user_guides)
         framed: list[dict] = []
+        nt_only: list[dict] = []
         for rec in tip_records:
             m = meta.get(rec.id) or meta.get(rec.id.split(".")[0])
             organism = m.organism if m else ""
@@ -270,6 +352,7 @@ def prepare_codon_locus(
                 geneticcode=geneticcode, mark_exons=mark_exons, manager=manager,
             )
             included = fr is not None
+            nt = None
             if fr is not None:
                 if strict_qc and not fr["qc_clean"]:
                     included = False
@@ -281,25 +364,43 @@ def prepare_codon_locus(
                     framed.append(fr)
                     summary["n_framed"] += 1
             else:
-                summary["n_failed"] += 1
+                # Could not codon-frame: keep it for the nucleotide (intron-inclusive) matrix
+                # if it orients to the isolate genomic — the intron-rich-barcode path (D-027).
+                if orient_ref:
+                    o = orient_amplicon(str(rec.seq), rec.id, orient_ref, blastn_bin=blastn_bin)
+                    if o:
+                        oriented, strand, pident, aln_len = o
+                        nt = {"id": rec.id, "organism": organism, "genomic": oriented,
+                              "strand": strand, "pident": pident, "aln_len": aln_len,
+                              "tip_len": len(rec.seq)}
+                        nt_only.append(nt)
+                        summary["n_nt_only"] += 1
+                        included = True
+                        status = (f"nucleotide-only — intronic/short amplicon, not codon-framed; "
+                                  f"oriented {strand} vs isolate genomic "
+                                  f"({pident:.0f}% / {aln_len} bp)")
+                if nt is None:
+                    summary["n_failed"] += 1
             rows.append({
                 "id": rec.id, "organism": organism,
                 "n_exons": fr["n_exons"] if fr else 0,
                 "n_introns": fr["n_introns"] if fr else 0,
-                "cds_length": fr["cds_length"] if fr else 0,
-                "verdict": fr["verdict"] if fr else "FAIL",
+                "cds_length": fr["cds_length"] if fr else (nt["tip_len"] if nt else 0),
+                "verdict": fr["verdict"] if fr else ("NT-ONLY" if nt else "FAIL"),
+                "product": ("CDS+genomic+protein" if fr else
+                            ("genomic (nt)" if nt else "—")),
                 "included": included, "status": status,
             })
 
-    # ── merge isolates (as-is) + framed tips, write the three matrices ──
-    iso_dir = isolate_combined_dir if (include_isolates and isolate_combined_dir) else None
+    # ── merge isolates (as-is) + framed tips (+ nucleotide-only tips, genomic only) ──
     for product in PRODUCTS:
         iso = _isolate_records(iso_dir, locus, product) if iso_dir else []
         tips = [_tip_seqrecord(fr, locus, product) for fr in framed]
-        if not iso and not tips:
+        nt_tips = [_nt_tip_seqrecord(nt, locus) for nt in nt_only] if product == "genomic" else []
+        if not iso and not tips and not nt_tips:
             continue
         path = os.path.join(out_dir, f"{locus}_{product}_combined.fasta")
-        SeqIO.write(iso + tips, path, "fasta")
+        SeqIO.write(iso + tips + nt_tips, path, "fasta")
         summary["outputs"][product] = path
         if product == "CDS":
             summary["n_isolates"] = len(iso)

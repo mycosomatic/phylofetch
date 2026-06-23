@@ -16,9 +16,14 @@ Per coding locus it writes three matrices (isolates + tips together) to
   • `<locus>_genomic_combined.fasta`  full gene (exons UPPER / introns lower) → nucleotide alignment
   • `<locus>_protein_combined.fasta`  translation                        → AA tree / alignment guide
 
-It RUNS NO ALIGNER and adds no dependency beyond Exonerate. Alignment + by-hand curation happen
-on the next page (Alignment Prep). rDNA tips (ITS/LSU/SSU) are non-coding, have no guide, and are
-not handled here — they go straight to MAFFT.
+It RUNS NO ALIGNER and adds no dependency beyond Exonerate (+ blastn for orientation). Alignment +
+by-hand curation happen on the next page (Alignment Prep). rDNA tips (ITS/LSU/SSU) are non-coding,
+have no guide, and are not handled here — they go straight to MAFFT.
+
+Intron-rich barcodes (D-027): some markers — fungal TEF1 most notably — amplify a largely intronic
+region that cannot be codon-framed. Those tips are oriented against the isolate genomic and added
+to the `*_genomic_combined.fasta` matrix only (nucleotide-only), so the intron-inclusive tree still
+carries them; the CDS/protein matrices stay isolate-only for that locus.
 """
 
 import shutil
@@ -94,18 +99,33 @@ with ca:
         "Strict QC (exclude frameshift / internal-stop tips)", value=False,
         help="Default: write-and-flag (imperfect tips are kept but flagged REVIEW, per D-008). "
              "Strict: leave them out of the matrices entirely.")
+    nt_fallback = st.checkbox(
+        "Keep un-framable tips as nucleotide (genomic matrix)", value=True,
+        help="Some standard coding barcodes — fungal TEF1 above all — amplify a largely "
+             "*intronic* region with too little exon for Exonerate to codon-frame. With this on, "
+             "such a tip is oriented (blastn vs your isolate genomic, which also confirms the "
+             "locus) and added to the genomic matrix only, flagged nucleotide-only — so the "
+             "intron-inclusive tree still includes it. CDS/protein stay isolate-only for that "
+             "locus. (D-027)")
 with cb:
     exonerate_bin = st.text_input("exonerate", value=tp.get("exonerate", "exonerate"))
+    blastn_bin = st.text_input("blastn", value=tp.get("blastn", "blastn"),
+                               help="Used to orient nucleotide-only tips against the isolate genomic.")
     maxintron = st.number_input("Max intron (bp)", value=2000, min_value=50, max_value=200000,
                                 step=100, help="Fungal introns are short; 2000 is a safe ceiling.")
     minintron = st.number_input("Min intron (bp)", value=20, min_value=4, max_value=200)
     geneticcode = st.number_input("Genetic code (NCBI)", value=1, min_value=1, max_value=33)
 
 exonerate_ok = shutil.which(exonerate_bin) is not None
-st.caption(f"Tool check: {'✅' if exonerate_ok else '❌'} exonerate")
+blastn_ok = shutil.which(blastn_bin) is not None
+st.caption(f"Tool check: {'✅' if exonerate_ok else '❌'} exonerate · "
+           f"{'✅' if blastn_ok else '❌'} blastn")
 if not exonerate_ok:
     st.error("⚠️ **exonerate not found.** This step requires Exonerate (same tool as coding "
              "extraction). Install: `conda install -c bioconda exonerate`.")
+if nt_fallback and not blastn_ok:
+    st.warning("⚠️ **blastn not found** — the nucleotide fallback needs it to orient tips; "
+               "un-framable tips will be reported but not added to the genomic matrix.")
 
 # ── 3 · Run ───────────────────────────────────────────────────────────────────
 st.subheader("3 · Run")
@@ -120,9 +140,10 @@ if st.button("🚀 Frame tips → codon-ready matrices", type="primary",
             s = prepare_codon_locus(
                 locus, tips_dir, str(with_tips_dir),
                 include_isolates=include_isolates, isolate_combined_dir=str(combined_dir),
-                exonerate_bin=exonerate_bin, minintron=int(minintron), maxintron=int(maxintron),
+                exonerate_bin=exonerate_bin, blastn_bin=blastn_bin,
+                minintron=int(minintron), maxintron=int(maxintron),
                 geneticcode=int(geneticcode), mark_exons=mark_exons, strict_qc=strict_qc,
-                manager=manager)
+                nt_fallback=nt_fallback, manager=manager)
         summaries.append(s)
         if s["outputs"]:
             outputs_prov[locus] = s["outputs"]
@@ -130,9 +151,10 @@ if st.button("🚀 Frame tips → codon-ready matrices", type="primary",
 
     update_step(project_dir, "codon_prep", status="done", outputs=outputs_prov,
                 notes=(f"loci={','.join(sel_loci)}; include_isolates={include_isolates}; "
-                       f"strict_qc={strict_qc}; "
+                       f"strict_qc={strict_qc}; nt_fallback={nt_fallback}; "
                        f"framed={sum(x['n_framed'] for x in summaries)}, "
                        f"flagged={sum(x['n_flagged'] for x in summaries)}, "
+                       f"nt_only={sum(x.get('n_nt_only', 0) for x in summaries)}, "
                        f"failed={sum(x['n_failed'] for x in summaries)}"))
     st.session_state["codon_prep_summaries"] = summaries
     st.success("Tips framed — provenance recorded in the manifest. Review QC below, then align "
@@ -145,21 +167,28 @@ if summaries:
     st.markdown("---")
     st.subheader("Results")
     overview = pd.DataFrame([{
-        "Locus": s["locus"], "Tips": s["n_tips"], "Framed": s["n_framed"],
-        "Flagged (REVIEW)": s["n_flagged"], "Could not frame": s["n_failed"],
-        "Isolates merged": s["n_isolates"], "Status": s["status"],
+        "Locus": s["locus"], "Tips": s["n_tips"], "Framed (CDS)": s["n_framed"],
+        "Flagged (REVIEW)": s["n_flagged"], "Nucleotide-only": s.get("n_nt_only", 0),
+        "Could not place": s["n_failed"], "Isolates merged": s["n_isolates"],
+        "Status": s["status"],
     } for s in summaries])
     st.dataframe(overview, width="stretch", hide_index=True)
+    if any(s.get("n_nt_only", 0) for s in summaries):
+        st.caption("🧬 **Nucleotide-only** tips (e.g. intron-rich TEF1 barcodes) could not be "
+                   "codon-framed but were oriented and added to the **genomic** matrix only — "
+                   "they carry the comparison taxon into the intron-inclusive tree (D-027).")
 
     for s in summaries:
         if not s["rows"]:
             continue
-        with st.expander(f"🔬 {s['locus']} — per-tip QC ({s['n_framed']}/{s['n_tips']} framed)"):
+        with st.expander(f"🔬 {s['locus']} — per-tip QC "
+                         f"({s['n_framed']} framed · {s.get('n_nt_only', 0)} nucleotide-only "
+                         f"of {s['n_tips']})"):
             df = pd.DataFrame([{
                 "Accession": r["id"], "Organism": r["organism"], "Exons": r["n_exons"],
-                "Introns": r["n_introns"], "CDS (bp)": r["cds_length"],
-                "QC": r["verdict"], "Included": "✅" if r["included"] else "—",
-                "Detail": r["status"],
+                "Introns": r["n_introns"], "Len (bp)": r["cds_length"],
+                "QC": r["verdict"], "Product": r.get("product", ""),
+                "Included": "✅" if r["included"] else "—", "Detail": r["status"],
             } for r in s["rows"]])
             st.dataframe(df, width="stretch", hide_index=True)
             if s["outputs"]:
@@ -174,7 +203,9 @@ if summaries:
         "- align `*_CDS_combined.fasta` codon-aware (MACSE if you have the JAR), or align the "
         "proteins and curate the CDS to match;\n"
         "- align `*_genomic_combined.fasta` with MAFFT (introns have no codon structure) — the "
-        "exon UPPER / intron lower case marks the boundaries as you edit, and move with the gaps;\n"
+        "exon UPPER / intron lower case marks the boundaries as you edit, and move with the gaps. "
+        "This matrix also holds any **nucleotide-only** tips (intron-rich barcodes like TEF1); "
+        "MAFFT `--adjustdirection` is a good belt-and-braces check on their orientation;\n"
         "- the per-sequence GFF3 from extraction imports into Geneious as an exon/intron track.\n\n"
         "Companions (optional, never required): **AliView** / **SeaView** (fast, frame-aware "
         "editors) or **Geneious**. Build a tree from the CDS and from the full gene and compare "

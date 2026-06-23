@@ -773,3 +773,42 @@ Format for each entry:
   resilient `_esummary_titles`, `lookup_accessions`, `import_tips_with_assignments` (legacy
   `classify_accessions` / `import_tip_accessions` retained + now normalize); `pages/7_Reference_Taxa.py`
   rewritten import section; +3 tests → part of **280 passing**. Stub-render-verified.
+
+### D-027 (2026-06-23) — Nucleotide fallback for intron-rich barcode tips (Codon Tip Prep)
+- **Decision:** When a comparison tip cannot be codon-framed (Exonerate `protein2genome` finds no
+  model), fall back to a **nucleotide-only** path instead of dropping it: blastn the amplicon
+  against the isolates' genomic locus to (a) confirm it belongs to the locus and (b) orient it to
+  the reference strand, then write it to the **genomic** matrix only, flagged
+  `[framed=no] [nucleotide_only=yes]`. The CDS/protein matrices stay isolate-only for that locus.
+  New `orient_amplicon()` in `codon_prep_utils`; `prepare_codon_locus` gains `blastn_bin` +
+  `nt_fallback` params and an `n_nt_only` count; page 8 gains the toggle, a blastn tool-check, and a
+  Nucleotide-only column. A tip that orients to nothing (wrong locus / contamination) is still
+  reported, not included.
+- **Why:** The standard fungal **TEF1** barcode (EF1-728F/986R, ~240 bp) amplifies a largely
+  **intronic** region. Diagnosed on real data: a TEF1 tip matches the isolate *genomic* gene
+  continuously (86% over 239 bp) but has **no blastn hit at all against the intron-stripped CDS**, so
+  `protein2genome` has essentially no exon to anchor and returns no model. Result: **0/25** TEF1 tips
+  framed vs **24/24** RPB2 (whose amplicons are ~865 bp and exon-rich) — even against a near-identical
+  Alternaria guide, so it is the data, not guide distance. These tips are still valid comparison taxa;
+  the published TEF1 phylogenies align them as nucleotide *with introns* (the variable introns are the
+  species-level signal — that is *why* the marker is used). Codon-stripping is the wrong model for this
+  locus's tips; the nucleotide/genomic tree is where they belong. The user confirmed: "the references I
+  am looking at don't trim introns." Verified: the TEF1 with_tips genomic matrix goes 7 → 32 (7
+  isolates + 25 oriented tips), CDS/protein stay at 7.
+- **Alternatives considered:** (a) **Use a taxon-closer guide to frame them** — rejected: tested, still
+  0/25 (the region is intronic; no guide creates exon that isn't there). (b) **Lower minintron /
+  identity thresholds** — rejected, same reason. (c) **Drop un-framable tips (status quo)** — rejected:
+  silently loses the comparison taxa for exactly the marker (TEF1) where public data is richest. (d)
+  **Extract just the tip's exon fragments** — rejected: discards the intronic signal the marker is
+  prized for, and the fragments are too short to align. (e) **Orient with MAFFT `--adjustdirection` at
+  alignment time instead of blastn here** — rejected as the in-app default: the page "runs no aligner"
+  by design (D-022), and blastn (already required for extraction) orients AND locus-confirms in one
+  step; the user still hand-checks orientation downstream. (f) **Include un-oriented when no isolate
+  genomic exists** — rejected: without an orientation/locus reference a possibly-reverse or off-locus
+  sequence could enter silently; the fallback is disabled (tip reported as failed) when there is no
+  isolate genomic to check against.
+- **Status:** active. Implemented 2026-06-23. `codon_prep_utils`: `orient_amplicon`,
+  `_nt_tip_seqrecord`, `prepare_codon_locus` nucleotide path (`blastn_bin`, `nt_fallback`,
+  `n_nt_only`); `pages/8_Codon_Tip_Prep.py`: toggle + blastn check + Nucleotide-only column; +6 tests
+  → **286 passing**. Live-verified on the project's 25 TEF1 tips (all oriented into the genomic
+  matrix, CDS/protein isolate-only); stub-render-verified.
