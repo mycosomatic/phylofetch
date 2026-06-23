@@ -45,6 +45,7 @@ from phylofetch.project_manager import (
     load_project_manifest,
     update_step,
 )
+from phylofetch.protein_guide_utils import expected_length, length_flag
 
 st.set_page_config(page_title="NCBI References", page_icon="📚", layout="wide")
 st.title("📚 NCBI References — taxon-closer guides")
@@ -124,8 +125,9 @@ with c2:
 with c3:
     preselect = st.number_input(
         "Pre-tick top N / locus", value=2, min_value=1, max_value=10,
-        help="Candidates are sorted RefSeq + longest first; the top N are pre-ticked. Exonerate "
-             "needs only one good ortholog — adjust the ticks before fetching.")
+        help="Candidates are sorted RefSeq + closest-to-guide-length first; the top N "
+             "length-appropriate ones are pre-ticked (length outliers are flagged, never "
+             "pre-ticked — D-025). Exonerate needs only one good ortholog — adjust before fetching.")
 if ref_type == "protein":
     st.caption("🧬 **Protein** guides layer onto the bundled universal core on the Exonerate page; "
                "RefSeq-only pulls the closest *annotated-genome* ortholog and skips barcode junk.")
@@ -211,8 +213,19 @@ else:
                 if h:
                     hits = h
                     break
-            hits.sort(key=lambda x: (_is_refseq(x.get("accession", "")), x.get("length", 0)),
-                      reverse=True)
+            # Length-aware ordering for protein guides (D-025): prefer RefSeq, then references
+            # whose length is *closest to the curated bundled-guide length* — NOT simply the
+            # longest, which pre-picks mis-annotated over-long models (e.g. an 865-aa
+            # "beta-tubulin" or 814-aa "EF1-alpha") that the extraction filter then drops.
+            exp = expected_length(loc) if ref_type == "protein" else None
+            if exp:
+                hits.sort(key=lambda x: (
+                    0 if _is_refseq(x.get("accession", "")) else 1,            # RefSeq first
+                    0 if length_flag(x.get("length", 0), exp) is None else 1,  # in-band first
+                    abs(x.get("length", 0) - exp)))                            # then closest length
+            else:
+                hits.sort(key=lambda x: (_is_refseq(x.get("accession", "")), x.get("length", 0)),
+                          reverse=True)
             cands[loc], used_tax[loc] = hits, used
             prog.progress((i + 1) / len(selected))
         st.session_state["ref_cands"] = {
@@ -234,32 +247,49 @@ else:
             lst = cands.get(loc, [])
             if not lst:
                 empty.append(loc)
+            exp = expected_length(loc) if ref_type == "protein" else None
             for j, h in enumerate(lst):
                 acc = h.get("accession", "")
+                length = h.get("length", 0)
+                flag = length_flag(length, exp) if exp else None
+                in_band = flag is None
                 rows.append({
-                    "Keep?": (not is_mism) and (j < data["preselect"]),
+                    # Only pre-tick length-appropriate refs (D-025) — an over-/under-long outlier
+                    # is shown but never auto-selected, even if it is the longest hit.
+                    "Keep?": (not is_mism) and in_band and (j < data["preselect"]),
                     "Locus": loc,
                     "Accession": acc,
                     "Organism": h.get("organism", ""),
-                    "Length": h.get("length", 0),
+                    "Length": length,
+                    "vs guide": ("" if not exp else
+                                 "✓" if in_band else
+                                 f"⚠ {flag} (~{exp})"),
                     "RefSeq": "✓" if _is_refseq(acc) else "",
                     "Taxon": used_tax.get(loc, "")
                              + (" (genus)" if used_tax.get(loc, "") != taxon.strip() else ""),
                     "NCBI": f"https://www.ncbi.nlm.nih.gov/{ncbi_db}/{acc}",
                 })
         if rows:
-            st.caption("Tick the references to fetch — sorted RefSeq + longest first, top "
-                       f"{data['preselect']} pre-ticked. One good full-length ortholog per locus "
-                       "is plenty for an Exonerate guide.")
+            band_note = (" Length is checked against the curated guide length per locus; "
+                         "**outliers (⚠) are flagged and never pre-ticked** (D-025) — a mis-"
+                         "annotated over-long model is *not* the one you want."
+                         if ref_type == "protein" else "")
+            st.caption(f"Tick the references to fetch — sorted RefSeq + closest-to-guide-length "
+                       f"first, top {data['preselect']} length-appropriate pre-ticked. One good "
+                       f"full-length ortholog per locus is plenty for an Exonerate guide.{band_note}")
             edited = st.data_editor(
                 pd.DataFrame(rows), width="stretch", hide_index=True,
                 key=f"refed_{ref_type}_{data['refseq_only']}_{data['min_len']}_{len(rows)}",
                 column_config={
                     "Keep?": st.column_config.CheckboxColumn(),
                     "Length": st.column_config.NumberColumn(format="%d"),
+                    "vs guide": st.column_config.TextColumn(
+                        "vs guide", help="Length vs the curated bundled-guide length for the locus "
+                                         "(D-025). ⚠ = outlier (likely mis-annotated); not pre-ticked."),
                     "NCBI": st.column_config.LinkColumn("NCBI", display_text="open"),
                 },
-                disabled=["Locus", "Accession", "Organism", "Length", "RefSeq", "Taxon", "NCBI"],
+                disabled=["Locus", "Accession", "Organism", "Length", "vs guide", "RefSeq",
+                          "Taxon", "NCBI"],
             )
             if mism:
                 st.warning("⚠️ Type mismatch (left unticked, will skip): "

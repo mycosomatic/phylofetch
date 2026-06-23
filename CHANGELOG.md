@@ -5,6 +5,12 @@
 
 ## 2026-06-23
 
+- **Length-aware reference picker (D-025 follow-up).** The References-page candidate picker was
+  still "RefSeq + longest first" — so it pre-ticked the over-long mis-annotated refs the D-025 filter
+  then drops (TEF1: auto-selected the 814/812-aa models, skipped the correct 457-aa EF1-α). Now
+  protein candidates sort RefSeq → in-band → closest-to-guide-length, a **"vs guide"** column flags
+  outliers (`⚠ long/short (~exp)`), and only length-appropriate refs are pre-ticked. Picker and
+  extraction filter now agree. (`pages/2_NCBI_References.py`.)
 - **Nucleotide fallback for intron-rich barcode tips — Codon Tip Prep (D-027).** Diagnosed why all
   25 TEF1 comparison tips produced an isolates-only matrix: the standard fungal TEF1 barcode
   (EF1-728F/986R, ~240 bp) is largely **intronic** — a tip matches the isolate *genomic* gene

@@ -741,6 +741,15 @@ Format for each entry:
   into "both"/"library" guide construction, picker counts, opt-out, manifest note; +6 tests →
   part of **280 passing**. Production re-run of the affected loci is a one-click in-app action (the
   filter is now live); the data fix was verified on a representative previously-broken strain.
+- **Follow-up (2026-06-23) — the picker must agree with the filter.** The References-page candidate
+  picker (D-024) still sorted "RefSeq + **longest** first" and pre-ticked the top N, so it
+  *recommended* exactly the over-long refs the filter then drops (TEF1: it auto-ticked the 814/812-aa
+  models and left the correct 457-aa EF1-alpha unticked — the user hit this). Fixed: the picker now
+  uses `expected_length` / `length_flag` too — protein candidates sort **RefSeq → in-band →
+  closest-to-guide-length**, a **"vs guide"** column flags outliers (`⚠ long/short (~exp)`), and
+  **only length-appropriate refs are pre-ticked** (an outlier is shown but never auto-selected). So
+  the recommended pick and the extraction filter are consistent. (`pages/2_NCBI_References.py`;
+  stub-render-verified; logic checked on the real TEF1 candidates → only the 457-aa ortholog ticked.)
 
 ### D-026 (2026-06-23) — Per-accession tip import: normalize accessions, assign locus per row, warn on lookup failure
 - **Decision:** Rework the Reference Taxa / Tips accession import from *paste → auto-classify →
