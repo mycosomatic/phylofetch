@@ -1,10 +1,10 @@
 """
 pages/11_Tree_Visualization.py
 -------------------------------
-IQ-TREE2 runner + tree visualization stub.
+IQ-TREE runner + tree visualization stub.
 
 Currently working:
-  - Run IQ-TREE2 on a supermatrix + partition nexus
+  - Run IQ-TREE on a supermatrix + partition nexus
   - Display Newick string and raw log
 
 In development (roadmap):
@@ -14,6 +14,7 @@ In development (roadmap):
 """
 
 import csv
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +29,7 @@ st.set_page_config(
     page_title="Tree Visualization", page_icon="🌳", layout="wide"
 )
 st.title("🌳 Tree Visualization")
-st.caption("Run IQ-TREE2 and inspect ML trees. Bayesian posterior overlay in development.")
+st.caption("Run IQ-TREE and inspect ML trees. Bayesian posterior overlay in development.")
 
 if "tool_paths" not in st.session_state:
     st.session_state.tool_paths = load_config().get("tool_paths", {})
@@ -42,15 +43,28 @@ tp = st.session_state.tool_paths
 project_dir = Path(st.session_state.project_dir)
 run_manager = RunManager(project_dir)
 
+
+def _resolve_iqtree(tool_paths: dict) -> str:
+    """Pick the IQ-TREE binary: an explicit config tool-path wins (any of the version keys),
+    otherwise auto-detect from PATH preferring the newest (iqtree3 ▸ iqtree2 ▸ iqtree). IQ-TREE 3
+    is CLI-compatible with 2 for the flags used here (-s/-p/-m/-B/-T/--prefix)."""
+    for key in ("iqtree3", "iqtree2", "iqtree"):
+        if tool_paths.get(key):
+            return tool_paths[key]
+    for b in ("iqtree3", "iqtree2", "iqtree"):
+        if shutil.which(b):
+            return b
+    return "iqtree2"
+
 tab_iqtree, tab_tree, tab_roadmap = st.tabs(
-    ["🧮 IQ-TREE2", "🌿 Tree View", "🗺️ Roadmap"]
+    ["🧮 IQ-TREE", "🌿 Tree View", "🗺️ Roadmap"]
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — IQ-TREE2
+# TAB 1 — IQ-TREE
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_iqtree:
-    st.subheader("Run IQ-TREE2")
+    st.subheader("Run IQ-TREE")
 
     col_i1, col_i2 = st.columns([2, 1])
     with col_i1:
@@ -71,7 +85,7 @@ with tab_iqtree:
         )
 
     with col_i2:
-        st.markdown("**IQ-TREE2 options**")
+        st.markdown("**IQ-TREE options**")
         iqtree_model = st.text_input(
             "Model / model testing",
             value="MFP+MERGE",
@@ -95,14 +109,22 @@ with tab_iqtree:
             index=0,
         )
         iqtree_extra = st.text_input(
-            "Extra IQ-TREE2 args",
+            "Extra IQ-TREE args",
             value="",
             placeholder="e.g. --redo --alrt 1000",
         )
 
-    iqtree_bin = tp.get("iqtree2", "iqtree2")
+        iqtree_bin = st.text_input(
+            "IQ-TREE binary",
+            value=_resolve_iqtree(tp),
+            help="Auto-detected from PATH, preferring the newest (iqtree3 ▸ iqtree2 ▸ iqtree). "
+                 "IQ-TREE 3 uses the same flags here. Override to pin a specific build.",
+        )
+        _iq_ok = shutil.which(iqtree_bin) is not None
+        st.caption(f"Tool check: {'✅' if _iq_ok else '❌'} `{iqtree_bin}`"
+                   + ("" if _iq_ok else " — not on PATH"))
 
-    if st.button("▶️ Run IQ-TREE2", type="primary", key="btn_iqtree"):
+    if st.button("▶️ Run IQ-TREE", type="primary", key="btn_iqtree"):
         if not supermatrix or not Path(supermatrix).exists():
             st.error("Supermatrix FASTA not found.")
         else:
@@ -120,15 +142,15 @@ with tab_iqtree:
             if iqtree_extra.strip():
                 cmd += iqtree_extra.split()
 
-            with st.spinner("IQ-TREE2 running… (this may take a while)"):
+            with st.spinner("IQ-TREE running… (this may take a while)"):
                 res = run_manager.run(
                     cmd,
-                    module="iqtree2",
+                    module="iqtree",
                     action="ml_tree",
                 )
 
             if res.returncode == 0:
-                st.success("IQ-TREE2 complete.")
+                st.success("IQ-TREE complete.")
                 treefile = Path(prefix + ".treefile")
                 if treefile.exists():
                     tree_text = treefile.read_text().strip()
@@ -143,16 +165,16 @@ with tab_iqtree:
                         mime="text/plain",
                     )
             else:
-                st.error(f"IQ-TREE2 failed (return code {res.returncode}).")
+                st.error(f"IQ-TREE failed (return code {res.returncode}).")
 
             log_lines = Path(res.stdout_path).read_text() + Path(res.stderr_path).read_text()
             if log_lines.strip():
-                with st.expander("IQ-TREE2 log"):
+                with st.expander("IQ-TREE log"):
                     st.code(log_lines[-8000:], language=None)
 
     # Show previously run trees from project history
     st.markdown("---")
-    st.subheader("Previous IQ-TREE2 runs")
+    st.subheader("Previous IQ-TREE runs")
     history_tsv = project_dir / "metadata" / "command_history.tsv"
     if history_tsv.exists():
         rows = []
@@ -168,7 +190,7 @@ with tab_iqtree:
             ]
             st.dataframe(df, width="stretch", hide_index=True)
         else:
-            st.info("No IQ-TREE2 runs in history.")
+            st.info("No IQ-TREE runs in history.")
     else:
         st.info("No run history yet.")
 
@@ -180,7 +202,7 @@ with tab_tree:
     st.caption("Basic Newick rendering via Biopython. Interactive rendering coming soon.")
 
     newick_input = st.text_area(
-        "Paste Newick string or run IQ-TREE2 above",
+        "Paste Newick string or run IQ-TREE above",
         value=st.session_state.get("newick", ""),
         height=100,
         key="newick_input",
@@ -208,7 +230,7 @@ with tab_tree:
 
             fig, ax = plt.subplots(figsize=(10, max(4, tree.count_terminals() * 0.25)))
             Phylo.draw(tree, axes=ax, do_show=False)
-            ax.set_title("ML tree (IQ-TREE2)")
+            ax.set_title("ML tree (IQ-TREE)")
             st.pyplot(fig)
             plt.close(fig)
         except ImportError:
@@ -222,7 +244,7 @@ with tab_tree:
             st.code(newick_input, language=None)
 
     if not newick_input:
-        st.info("Run IQ-TREE2 in the IQ-TREE2 tab, or paste a Newick string above.")
+        st.info("Run IQ-TREE in the IQ-TREE tab, or paste a Newick string above.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — Roadmap
@@ -245,7 +267,7 @@ with tab_roadmap:
         - Display dual-support nodes: bootstrap (IQ-TREE) + posterior (BEAST/MrBayes)
         - Export labeled tree figure
 
-        #### IQ-TREE2 workflow integration
+        #### IQ-TREE workflow integration
         - Partition scheme selection from ModelFinder output
         - Per-partition substitution model display
         - Branch support visualization (UFBoot, SH-aLRT)

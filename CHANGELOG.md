@@ -5,6 +5,11 @@
 
 ## 2026-06-23
 
+- **IQ-TREE binary auto-detect (prefers iqtree3).** The Tree page hard-coded `iqtree2`; it now
+  resolves the binary from config tool-paths or auto-detects from PATH preferring the newest
+  (`iqtree3` ▸ `iqtree2` ▸ `iqtree`), with an editable field + tool-check. IQ-TREE 3 is CLI-compatible
+  for the flags used (-s/-p/-m/-B/-T/--prefix). Labels/provenance module generalized to "IQ-TREE";
+  `environment.yml` pin kept as the reproducible fallback. (`pages/11_Tree_Visualization.py`.)
 - **Length-aware reference picker (D-025 follow-up).** The References-page candidate picker was
   still "RefSeq + longest first" — so it pre-ticked the over-long mis-annotated refs the D-025 filter
   then drops (TEF1: auto-selected the 814/812-aa models, skipped the correct 457-aa EF1-α). Now

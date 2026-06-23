@@ -12,6 +12,8 @@ dependencies:
   - bioconda::exonerate=2.4.0    # spliced protein/CDS→genome alignment (frame-safe CDS)
   - bioconda::mafft=7.520
   - bioconda::trimal=1.4.1
+  # IQ-TREE: the Tree page auto-detects the binary, preferring a newer `iqtree3` on PATH
+  # (CLI-compatible for the flags used here). This pin is the reproducible fallback.
   - bioconda::iqtree=2.2.6
   # Python packages via conda
   - biopython>=1.81
