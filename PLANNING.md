@@ -191,6 +191,14 @@ user's decisions in that session.
 
 ### Architecture refinements (not numbered RM items)
 
+- _(2026-06-23) **Reference-quality QC: guide-length filter** (D-025)._ A real coding run exposed
+  that fetched taxon-closer Alternaria RefSeq proteins can be **mis-annotated over-long** (an 865-aa
+  "partial β-tubulin", 812–814-aa EF1-α) and, being high-identity, out-score the correct guides in
+  "both" mode — yielding ~2× over-long / frameshifted CDS that the frame/stop QC can't catch when
+  in-frame. Fix: filter project refs by length against the curated bundled-guide expectation
+  (`expected_length` ± 30 %), drop-and-flag outliers, opt-out retained. The bundled guides remain the
+  trusted full-length anchor.
+
 - _(2026-06-22) **NCBI References page repurposed** (D-023)._ With bundled universal protein guides
   the default extraction source (D-020), the References page is now optional: it fetches
   **taxon-closer protein** orthologs that *supplement* the bundled core (new Exonerate "Bundled +

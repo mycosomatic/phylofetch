@@ -55,7 +55,7 @@ phylofetch/
 │   ├── ncbi_utils.py
 │   ├── primer_utils.py
 │   ├── project_manager.py # RunManager, tool version probing, project manifest
-│   ├── protein_guide_utils.py # bundled protein guides → protein2genome (D-020 / RM-008 c1)
+│   ├── protein_guide_utils.py # bundled protein guides → protein2genome (D-020 / RM-008 c1); guide-length sanity filter (D-025)
 │   ├── codon_prep_utils.py # tips → frame-consistent CDS + full-gene + protein (D-022 / RM-008 c2)
 │   ├── taxon_id_utils.py  # ITS→remote BLAST provisional taxon ID (D-014)
 │   └── tips_utils.py      # comparison-tip import + locus auto-classification (D-020 / RM-008 c3)
@@ -64,7 +64,7 @@ phylofetch/
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
 │   ├── 2_NCBI_References.py     # optional taxon-closer guides, coding-only, RefSeq candidate picker (D-024, D-023)
 │   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015)
-│   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest
+│   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest; ref length filter (D-025)
 │   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
 │   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)
 │   ├── 7_Reference_Taxa.py     # tree tips: paste accessions → auto-classify to locus (D-020)
@@ -145,6 +145,10 @@ per-project (`<project>/references`, D-013) and extraction outputs are per-proje
    *Bundled guides* (universal Asco/Basidio protein core, default, no fetching) · *Bundled +
    project library (taxon-closer)* (bundled guides plus the project's fetched protein refs in one
    `protein2genome` query, best model wins) · *Project reference library* (only the fetched refs).
+   Fetched refs pass a **guide-length sanity filter** (D-025): refs whose length deviates >30% from
+   the curated bundled-guide length for the locus are dropped (mis-annotated/fused over-long models
+   — e.g. an 865-aa "partial β-tubulin" — out-score correct guides on identity); opt-out available,
+   bundled guides always remain.
 3. **PCR Primers (in-silico PCR)** (`5_Primers.py`, `primer_utils.py`). Locate fwd+rev primer
    binding sites with `blastn-short` (IUPAC degenerate primers expanded to concrete oligos
    first, D-009), pair on the same contig opposite strands, extract the amplicon between. No

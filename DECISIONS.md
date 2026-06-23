@@ -701,3 +701,43 @@ Format for each entry:
   (refseq filter, two summary-parse) → **271 passing** (was 268). References page rewritten with the
   candidate picker + RefSeq checkbox + min-length, Type-material removed; live-verified end to end
   (novel-species → genus fallback, clean RefSeq candidates, organisms shown) and stub-render-verified.
+
+### D-025 (2026-06-23) — Guide-length sanity filter (reject mis-annotated over-long references)
+- **Decision:** Before Exonerate runs, **filter fetched project protein references by length**
+  against the curated bundled-guide expectation for the locus, dropping outliers (default
+  tolerance ±30 %). New in `protein_guide_utils`: `expected_length(locus)` (median bundled-guide
+  length — the trusted full-length anchor), `length_flag(length, expected)` (`short`/`long`/None),
+  `filter_records_by_length(records, locus)` → `(kept, dropped)`. The Exonerate page applies this to
+  the `extra_records` it layers on in **"both"** mode and to a **protein** project library in
+  **"library"** mode; dropped refs are surfaced inline (`acc N aa vs ~E, long`) and pre-counted in
+  the locus picker, with a **"Keep length-flagged refs anyway"** opt-out and the filter state
+  recorded in the manifest (`length_filter=on/off; dropped_refs=N`). The bundled guides always
+  remain, so a locus is never left without a query even if every project ref is dropped.
+- **Why:** Diagnosed from a real run (project *Alternaria_Final*, 7 strains × 8 coding loci): TEF1
+  CDS came out **813 aa** (real EF1-α ≈ 460) and TUB2 **864 aa** (real β-tubulin ≈ 447), with 5/7
+  strains additionally **frameshifted** (40 internal stops in RPB2-like cases, 17 in TUB2). Root
+  cause was not Exonerate but the **reference**: in "both" mode the fetched taxon-closer Alternaria
+  RefSeq proteins out-score the correct-length universal guides on raw identity, and some are
+  **mis-annotated** — e.g. `XP_038787078.1` is labelled "beta-tubulin, **partial**" yet is **865 aa**
+  (a fused/over-predicted model), and the EF1-α entries are 812–814 aa. Exonerate then faithfully
+  reconstructs the wrong model. The frame/stop QC (D-008) cannot catch this: an in-frame CDS built
+  from a bad reference (TEF1) sails through with 0 stops. A length check against the hand-curated
+  bundled guides is the missing orthogonal QC. **Verified end to end:** with the filter, TUB2
+  S9-1B-A2 → **482 aa, 0 stops, in-frame** (kept the legitimately-sized 483-aa *A. atra*
+  `XP_043168330.1`), TEF1 → **456 aa, 0 stops** (bundled 460-aa guide won); the 865/812/814-aa refs
+  are dropped while the mildly-long RPB2 refs (1273/1296 vs ~1184) are correctly kept.
+- **Alternatives considered:** (a) **Tighten min-length only (extend D-024)** — rejected: D-024's
+  floor catches the 5-aa junk but not the *over*-long case; the failure is two-sided, so the band is
+  two-sided. (b) **Trust Exonerate's frame/stop QC alone** — rejected: it is blind to the in-frame
+  over-long TEF1 (the most dangerous case, because it looks clean). (c) **Default to bundled-only for
+  standard loci** — rejected as the primary fix (loses the genuine taxon-closer benefit when the
+  fetched ref is good, e.g. the 483-aa A. atra TUB2); the filter keeps good near-relatives and drops
+  only outliers. (d) **Auto-trim the over-long CDS to the guide span** — rejected: silently editing
+  sequence violates the transparency rule; drop-and-flag lets the user see and decide. (e) **Hard
+  drop with no override** — rejected: kept the "Keep anyway" escape for the rare real long isoform,
+  consistent with the app's write-and-flag philosophy.
+- **Status:** active. Implemented 2026-06-23. `protein_guide_utils`: `LENGTH_TOLERANCE`,
+  `expected_length`, `length_flag`, `filter_records_by_length`; `pages/4_Exonerate.py`: filter wired
+  into "both"/"library" guide construction, picker counts, opt-out, manifest note; +6 tests →
+  part of **280 passing**. Production re-run of the affected loci is a one-click in-app action (the
+  filter is now live); the data fix was verified on a representative previously-broken strain.

@@ -45,7 +45,13 @@ from phylofetch.project_manager import (
     project_output_dir,
     update_step,
 )
-from phylofetch.protein_guide_utils import get_guides, guide_loci, write_guide_fasta
+from phylofetch.protein_guide_utils import (
+    LENGTH_TOLERANCE,
+    filter_records_by_length,
+    get_guides,
+    guide_loci,
+    write_guide_fasta,
+)
 
 st.set_page_config(page_title="Exonerate (coding)", page_icon="🧬", layout="wide")
 st.title("🧬 Exonerate — coding loci")
@@ -114,6 +120,7 @@ ref_source = st.radio(
 ref_mode = ("both" if ref_source.startswith("Bundled guides +")
             else "bundled" if ref_source.startswith("Bundled")
             else "library")
+keep_flagged = False  # D-025 length-filter opt-out (set in the bundled/both branch)
 
 if ref_mode in ("bundled", "both"):
     avail = [loc for loc in CODING if loc in set(guide_loci())]
@@ -121,8 +128,10 @@ if ref_mode in ("bundled", "both"):
     def _fmt_guide(loc: str) -> str:
         base = f"{loc} · {len(get_guides(loc))} guide(s)"
         if ref_mode == "both":
-            n = len(_project_protein_refs(loc))
-            return base + (f" + {n} proj protein" if n else "")
+            kept, dropped = filter_records_by_length(_project_protein_refs(loc), loc)
+            tail = f" + {len(kept)} proj protein" if kept else ""
+            tail += f" · ⚠️ {len(dropped)} length-flagged" if dropped else ""
+            return base + tail
         return base
 
     sel_loci = st.multiselect("Loci (bundled guides)", avail, default=avail,
@@ -131,6 +140,15 @@ if ref_mode in ("bundled", "both"):
         st.caption("ℹ️ Only **protein** project references are layered onto the bundled guides "
                    "(protein2genome); a locus whose library is nucleotide just uses the bundled "
                    "guides here. Fetch taxon-closer proteins on the **NCBI References** page.")
+        st.caption(f"🛡️ **Length sanity filter (D-025):** project refs whose length deviates "
+                   f">{LENGTH_TOLERANCE:.0%} from the curated bundled-guide length for the locus "
+                   "are dropped from the Exonerate query (they're usually mis-annotated / fused "
+                   "GenBank models that out-score the correct guides on raw identity). The "
+                   "bundled guides always remain, so the locus is never left without a query.")
+        keep_flagged = st.checkbox("Keep length-flagged project refs anyway (not recommended)",
+                                   value=False,
+                                   help="Override the D-025 filter and feed every fetched protein "
+                                        "ref to Exonerate regardless of length.")
 else:
     avail = [loc for loc in CODING if count_refs(loc, ref_dir=ref_dir) > 0]
     if not avail:
@@ -329,6 +347,42 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
             blastn_task="dc-megablast", threads=int(threads), blastn_bin=blastn_bin,
             tblastn_bin=tblastn_bin, run_dir=str(rr[1]), require_complete_cds=require_cds)
 
+    flagged_notice: dict = {}   # locus -> [(ref_id, length, expected, flag)] dropped by D-025
+    flagged_shown: set = set()
+
+    def _guide_fa_for(locus):
+        """Build the Exonerate query FASTA for `locus`, applying the D-025 bundled-length sanity
+        filter to fetched project refs (unless the user opted out). Dropped refs are recorded in
+        flagged_notice for a post-build notice. The bundled guides always remain, so 'both' mode
+        is never left without a query even if every project ref is dropped."""
+        from Bio import SeqIO as _SeqIO
+        guide_path = str(Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta")
+        if ref_mode == "library":
+            recs = _project_protein_refs(locus)        # protein-only; [] when library is nt
+            if not recs:                               # nucleotide library → length n/a, as-is
+                return locus_ref_fasta(locus, ref_dir=ref_dir)
+            kept = recs
+            if not keep_flagged:
+                kept, dropped = filter_records_by_length(recs, locus)
+                if dropped:
+                    flagged_notice[locus] = [(r.id, n, e, f) for r, n, e, f in dropped]
+            if not kept:
+                return None
+            Path(guide_path).parent.mkdir(parents=True, exist_ok=True)
+            _SeqIO.write(kept, guide_path, "fasta")    # library-only: no bundled guides added
+            return guide_path
+        extra = None
+        if ref_mode == "both":
+            recs = _project_protein_refs(locus)
+            if keep_flagged:
+                extra = recs or None
+            else:
+                kept, dropped = filter_records_by_length(recs, locus)
+                if dropped:
+                    flagged_notice[locus] = [(r.id, n, e, f) for r, n, e, f in dropped]
+                extra = kept or None
+        return write_guide_fasta(locus, guide_path, extra_records=extra)
+
     done = 0
     for strain_id in sel:
         assembly = registry[strain_id].get("assembly_path", "")
@@ -340,13 +394,12 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
         st.markdown(f"**{strain_id}**" + (f" · {effective_taxon(registry[strain_id], default_taxon)}"
                                           if effective_taxon(registry[strain_id], default_taxon) else ""))
         for locus in sel_loci:
-            if ref_mode == "library":
-                ref_fa = locus_ref_fasta(locus, ref_dir=ref_dir)
-            else:
-                extra = _project_protein_refs(locus) if ref_mode == "both" else None
-                ref_fa = write_guide_fasta(
-                    locus, str(Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta"),
-                    extra_records=extra)
+            ref_fa = _guide_fa_for(locus)
+            if locus in flagged_notice and locus not in flagged_shown:
+                flagged_shown.add(locus)
+                drops = "; ".join(f"`{rid}` ({n} aa vs ~{e}, {flag})"
+                                  for rid, n, e, flag in flagged_notice[locus])
+                st.caption(f"🛡️ {locus}: dropped length-flagged project ref(s) — {drops}")
             if not ref_fa or not os.path.exists(ref_fa):
                 _report(locus, None, "no reference available for this locus")
                 done += 1; prog.progress(done / total)
@@ -368,13 +421,16 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
         merged = merge_per_strain_outputs(str(per_strain_dir), str(combined_dir), locus)
         if merged:
             combined[locus] = merged
+    n_dropped = sum(len(v) for v in flagged_notice.values())
     update_step(project_dir, "coding", status="done",
                 outputs={loc: list(m) for loc, m in combined.items()},
                 notes=f"strains={len(sel)}; loci={','.join(sel_loci) or '—'}; "
                       f"goi={','.join(goi_genes) or '—'}; "
                       f"ref_source={ref_mode}; "
                       f"engine={'exonerate' if exonerate_ok else 'blast-fallback'}"
-                      + ("" if not relaxed_blast else "; mode=relaxed_blast"))
+                      + ("" if not relaxed_blast else "; mode=relaxed_blast")
+                      + (f"; length_filter={'off' if keep_flagged else 'on'}")
+                      + (f"; dropped_refs={n_dropped}" if n_dropped else ""))
     st.session_state["exonerate_combined"] = {loc: {k: v for k, v in m.items()}
                                               for loc, m in combined.items()}
     st.success("Coding extraction complete — provenance recorded in the manifest.")

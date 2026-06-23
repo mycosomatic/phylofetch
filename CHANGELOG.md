@@ -3,6 +3,24 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-23
+
+- **Guide-length sanity filter — reject mis-annotated over-long references (D-025).** A real run
+  (project *Alternaria_Final*) produced **TEF1 813 aa** (EF1-α ≈ 460) and **TUB2 864 aa**
+  (β-tubulin ≈ 447) CDS, with 5/7 strains frameshifted. Root cause: in "Bundled + project
+  (taxon-closer)" mode the fetched Alternaria RefSeq proteins out-scored the correct-length guides,
+  and some are mis-annotated — `XP_038787078.1` is "beta-tubulin, **partial**" yet **865 aa**. The
+  frame/stop QC (D-008) can't catch an in-frame CDS from a bad ref (TEF1 had 0 stops).
+  - `protein_guide_utils`: `expected_length` (median bundled-guide length, the trusted anchor),
+    `length_flag`, `filter_records_by_length` → `(kept, dropped)`; `LENGTH_TOLERANCE = 0.30`.
+  - `pages/4_Exonerate.py`: the filter is applied to project refs layered on in "both" mode (and to
+    a protein "library"); dropped refs are shown inline + pre-counted in the locus picker, with a
+    **"Keep length-flagged refs anyway"** opt-out and the state logged to the manifest. Bundled
+    guides always remain, so a locus is never left without a query.
+  - **Verified end to end:** with the filter, TUB2 → **482 aa, 0 stops** (kept the 483-aa *A. atra*
+    ref), TEF1 → **456 aa, 0 stops** (bundled 460-aa guide); the 865/812/814-aa refs dropped, the
+    mildly-long RPB2 refs (≈1290) correctly kept. +6 tests → **277 passing** (was 271).
+
 ## 2026-06-22
 
 - **Fix junk protein references — RefSeq-restricted + candidate picker (D-024).** The References

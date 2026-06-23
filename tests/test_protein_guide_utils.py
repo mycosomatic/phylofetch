@@ -14,8 +14,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from Bio import SeqIO
 
 from phylofetch.protein_guide_utils import (
+    LENGTH_TOLERANCE,
+    expected_length,
+    filter_records_by_length,
     get_guides,
     guide_loci,
+    length_flag,
     load_protein_guides,
     write_guide_fasta,
 )
@@ -98,6 +102,48 @@ class TestWriteGuideFasta:
         path = write_guide_fasta("NOPE", str(out), include_user=False, extra_records=extra)
         assert path is not None
         assert [r.id for r in SeqIO.parse(str(path), "fasta")] == ["XP_9.1"]
+
+
+def _rec(seq_len: int, rid: str = "ref"):
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord
+    return SeqRecord(Seq("M" * seq_len), id=rid, description="")
+
+
+class TestGuideLengthFilter:
+    """D-025: drop fetched refs whose length deviates from the curated bundled-guide length."""
+
+    def test_expected_length_is_bundled_median(self):
+        # TUB2 bundled guides are both 447 aa; TEF1 both 460 aa.
+        assert expected_length("TUB2", include_user=False) == 447
+        assert expected_length("TEF1", include_user=False) == 460
+        assert expected_length("NOPE", include_user=False) is None   # no expectation → None
+
+    def test_length_flag_bands(self):
+        assert length_flag(447, 447) is None
+        assert length_flag(580, 447) is None          # +30% within band
+        assert length_flag(865, 447) == "long"        # the real mis-annotated beta-tubulin
+        assert length_flag(5, 460) == "short"         # the kind of junk D-024 also targets
+        assert length_flag(999, None) is None         # no expectation → never flag
+
+    def test_real_world_overlong_refs_dropped(self):
+        # The exact lengths seen in the wild: 865-aa "partial" TUB2, 812/814-aa TEF1.
+        kept, dropped = filter_records_by_length(
+            [_rec(865, "XP_038787078.1"), _rec(483, "XP_043168330.1")], "TUB2", include_user=False)
+        assert [r.id for r in kept] == ["XP_043168330.1"]          # correctly-sized ref kept
+        assert [(r.id, n, "long") for r, n, e, f in dropped] == [("XP_038787078.1", 865, "long")]
+
+        kept2, dropped2 = filter_records_by_length(
+            [_rec(814, "a"), _rec(812, "b")], "TEF1", include_user=False)
+        assert kept2 == [] and len(dropped2) == 2                  # both over-long → all dropped
+
+    def test_no_bundled_guide_keeps_everything(self):
+        # Without an expectation we never silently discard a reference.
+        kept, dropped = filter_records_by_length([_rec(5), _rec(9000)], "NOPE", include_user=False)
+        assert len(kept) == 2 and dropped == []
+
+    def test_tolerance_constant_is_sane(self):
+        assert 0.1 <= LENGTH_TOLERANCE <= 0.5
 
 
 class TestUserLineagePackMerge:
