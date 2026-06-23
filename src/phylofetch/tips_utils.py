@@ -36,9 +36,41 @@ def project_tips_dir(project_dir) -> Path:
     return d
 
 
-# ── Locus auto-classification ─────────────────────────────────────────────────
+# ── Accession normalization ───────────────────────────────────────────────────
 
 import re as _re
+
+# RefSeq accessions carry a mandatory underscore after the two-letter molecule prefix
+# (e.g. NR_135944). Pasted without it (``NR135944``) the bare form still resolves as an NCBI
+# *URL*, but Entrez/BLAST do **not** recognise it, so the record silently fails to populate.
+# These are the two-letter RefSeq prefixes we repair; GenBank accessions never use them, so
+# there is no collision with a real bare GenBank id (D-026).
+REFSEQ_PREFIXES = frozenset({
+    "AC", "NC", "NG", "NM", "NR", "NT", "NW", "NZ", "XM", "XR",   # nucleotide / RNA
+    "AP", "NP", "WP", "YP", "XP",                                  # protein
+})
+
+_REFSEQ_BARE = _re.compile(r"^([A-Z]{2})(\d{6,})(\.\d+)?$")
+
+
+def normalize_accession(acc: str) -> str:
+    """
+    Repair a RefSeq accession that is missing its underscore (``NR135944`` → ``NR_135944``),
+    so Entrez/BLAST can resolve it (D-026). Any other accession — GenBank, or an already
+    well-formed RefSeq id — is returned unchanged (only whitespace-stripped). The match is
+    anchored on a known RefSeq two-letter prefix + ≥6 digits, so ordinary GenBank ids are
+    never rewritten.
+    """
+    a = (acc or "").strip()
+    if not a:
+        return a
+    m = _REFSEQ_BARE.match(a.upper())
+    if m and m.group(1) in REFSEQ_PREFIXES:
+        return f"{m.group(1)}_{m.group(2)}{m.group(3) or ''}"
+    return a
+
+
+# ── Locus auto-classification ─────────────────────────────────────────────────
 
 
 def _locus_terms(catalogue) -> dict[str, list[str]]:
@@ -76,20 +108,93 @@ def classify_locus(text: str, catalogue=LOCUS_CATALOGUE) -> Optional[str]:
 # ── Accession summaries + import ──────────────────────────────────────────────
 
 def _esummary_titles(accessions: list[str], db: str) -> dict[str, str]:
-    """{accession (versioned and base): title} for a batch of accessions via one esummary."""
+    """
+    ``{accession (versioned and base): title}`` for a batch of accessions via esummary. Tries
+    one batched call; if that raises (NCBI rejects the *whole* batch when any id is malformed),
+    it falls back to per-accession calls so the good ones still resolve and only the bad ones go
+    missing (→ caller flags them as "not found", D-026).
+    """
     _require_email()
-    time.sleep(0.34)
-    handle = Entrez.esummary(db=db, id=",".join(accessions))
-    recs = Entrez.read(handle)
-    handle.close()
     titles: dict[str, str] = {}
-    for s in recs:
-        av = str(s.get("AccessionVersion", ""))
-        t = str(s.get("Title", ""))
-        if av:
-            titles[av] = t
-            titles[av.split(".")[0]] = t
+
+    def _batch(ids: list[str]) -> None:
+        time.sleep(0.34)
+        handle = Entrez.esummary(db=db, id=",".join(ids))
+        recs = Entrez.read(handle)
+        handle.close()
+        for s in recs:
+            av = str(s.get("AccessionVersion", ""))
+            t = str(s.get("Title", ""))
+            if av:
+                titles[av] = t
+                titles[av.split(".")[0]] = t
+
+    try:
+        _batch(accessions)
+    except Exception:                                   # noqa: BLE001 — isolate the offender(s)
+        for a in accessions:
+            try:
+                _batch([a])
+            except Exception:                           # noqa: BLE001 — unresolvable id; skip
+                pass
     return titles
+
+
+def lookup_accessions(accessions: list[str], db: str = "nucleotide") -> list[dict]:
+    """
+    Normalize each pasted accession, pull its GenBank title from NCBI (no sequence fetch yet),
+    and suggest a locus — one row per input, preserving order (D-026). Each row is::
+
+        {"input": <as pasted>, "accession": <normalized>, "title": str,
+         "found": bool, "locus_guess": <locus or None>}
+
+    ``found=False`` means NCBI returned nothing for that id (typo, wrong database, or a bare
+    RefSeq id we could not repair) — the page surfaces these so none fail silently.
+    """
+    seen: list[tuple[str, str]] = []
+    for a in accessions:
+        if a and a.strip():
+            seen.append((a.strip(), normalize_accession(a)))
+    titles = _esummary_titles([n for _, n in seen], db) if seen else {}
+    rows: list[dict] = []
+    for original, acc in seen:
+        title = titles.get(acc) or titles.get(acc.split(".")[0]) or ""
+        rows.append({
+            "input": original,
+            "accession": acc,
+            "title": title,
+            "found": bool(title),
+            "locus_guess": classify_locus(title) if title else None,
+        })
+    return rows
+
+
+def import_tips_with_assignments(assignments: dict[str, str], tips_dir,
+                                 db: str = "nucleotide",
+                                 query: str = "tips import") -> dict:
+    """
+    Fetch + store each accession under the **locus the user chose for it** (D-026). ``assignments``
+    maps accession → locus; an entry with a falsy locus is skipped (the user opted not to import
+    it). Accessions are normalized first. Returns
+    ``{"assigned": {locus: [acc]}, "errors": [str]}``.
+    """
+    by_locus: dict[str, list[str]] = defaultdict(list)
+    for acc, loc in assignments.items():
+        norm = normalize_accession(acc)
+        if loc and norm:
+            by_locus[loc].append(norm)
+
+    assigned: dict[str, list[str]] = {}
+    errors: list[str] = []
+    for loc, group in by_locus.items():
+        try:
+            _added, _skipped, errs = fetch_and_store(group, loc, db=db, query=query,
+                                                     ref_dir=tips_dir)
+            assigned[loc] = group
+            errors.extend(errs)
+        except Exception as e:                          # noqa: BLE001 — surface to UI
+            errors.append(f"{loc}: {e}")
+    return {"assigned": assigned, "errors": errors}
 
 
 def classify_accessions(accessions: list[str], db: str = "nucleotide") -> dict:
@@ -97,7 +202,7 @@ def classify_accessions(accessions: list[str], db: str = "nucleotide") -> dict:
     Look up titles for ``accessions`` and classify each to a locus (no fetching of sequences).
     Returns {"by_locus": {locus: [acc, ...]}, "unassigned": [acc, ...], "titles": {acc: title}}.
     """
-    accs = [a.strip() for a in accessions if a.strip()]
+    accs = [normalize_accession(a) for a in accessions if a.strip()]
     titles = _esummary_titles(accs, db) if accs else {}
     by_locus: dict[str, list[str]] = defaultdict(list)
     unassigned: list[str] = []
@@ -116,7 +221,7 @@ def import_tip_accessions(accessions: list[str], tips_dir, db: str = "nucleotide
     (or all to ``force_locus`` when given — e.g. reassigning previously unassigned ones).
     Returns {"assigned": {locus: [acc]}, "unassigned": [acc], "errors": [str]}.
     """
-    accs = [a.strip() for a in accessions if a.strip()]
+    accs = [normalize_accession(a) for a in accessions if a.strip()]
     if force_locus:
         grouped, unassigned = {force_locus: accs}, []
     else:

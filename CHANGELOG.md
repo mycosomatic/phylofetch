@@ -19,7 +19,20 @@
     guides always remain, so a locus is never left without a query.
   - **Verified end to end:** with the filter, TUB2 → **482 aa, 0 stops** (kept the 483-aa *A. atra*
     ref), TEF1 → **456 aa, 0 stops** (bundled 460-aa guide); the 865/812/814-aa refs dropped, the
-    mildly-long RPB2 refs (≈1290) correctly kept. +6 tests → **277 passing** (was 271).
+    mildly-long RPB2 refs (≈1290) correctly kept. +6 tests.
+- **Per-accession tip import — normalize, assign per row, warn on failure (D-026).** Reworked the
+  Reference Taxa / Tips import after two user reports: `NR_135944` pasted as `NR135944` silently
+  failed (works as a URL, not for Entrez/BLAST), and the page could only bulk-assign all
+  unclassified accessions to **one** locus.
+  - `tips_utils`: `normalize_accession` repairs bare RefSeq ids (`NR135944` → `NR_135944`) on a
+    known-prefix anchor (GenBank ids untouched); `lookup_accessions` returns per-accession
+    `input/accession/title/found/locus_guess`; `_esummary_titles` falls back to per-id calls so one
+    bad id can't sink the batch; `import_tips_with_assignments` stores each accession under the
+    user-chosen locus.
+  - `pages/7_Reference_Taxa.py`: paste → **look up on NCBI** → a per-row editor (locus selectbox
+    pre-filled with the auto-guess, title + nuccore link shown) → import; accessions that don't
+    resolve are surfaced as an explicit warning. +3 tests.
+- Full suite **280 passing** (was 271).
 
 ## 2026-06-22
 

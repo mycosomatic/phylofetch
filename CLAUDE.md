@@ -58,7 +58,7 @@ phylofetch/
 │   ├── protein_guide_utils.py # bundled protein guides → protein2genome (D-020 / RM-008 c1); guide-length sanity filter (D-025)
 │   ├── codon_prep_utils.py # tips → frame-consistent CDS + full-gene + protein (D-022 / RM-008 c2)
 │   ├── taxon_id_utils.py  # ITS→remote BLAST provisional taxon ID (D-014)
-│   └── tips_utils.py      # comparison-tip import + locus auto-classification (D-020 / RM-008 c3)
+│   └── tips_utils.py      # tip import + locus auto-classify (D-020); accession normalize + per-accession assign (D-026)
 ├── pages/                 # Streamlit multi-page app (component-page workflow, D-012)
 │   ├── 0_Project_Setup.py
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
@@ -67,7 +67,7 @@ phylofetch/
 │   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest; ref length filter (D-025)
 │   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
 │   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)
-│   ├── 7_Reference_Taxa.py     # tree tips: paste accessions → auto-classify to locus (D-020)
+│   ├── 7_Reference_Taxa.py     # tree tips: paste → NCBI lookup → per-accession locus assign (D-020, D-026)
 │   ├── 8_Codon_Tip_Prep.py     # frame coding tips → codon-ready CDS+gene+protein matrices (D-022)
 │   ├── 9_Alignment_Prep.py
 │   ├── 10_BUSCO_Phylogenomics.py

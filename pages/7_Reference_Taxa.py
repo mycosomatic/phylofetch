@@ -29,7 +29,13 @@ from phylofetch.ncbi_utils import (
     set_email,
 )
 from phylofetch.project_manager import DEFAULT_PROJECT_DIR
-from phylofetch.tips_utils import import_tip_accessions, project_tips_dir
+from phylofetch.tips_utils import (
+    import_tips_with_assignments,
+    lookup_accessions,
+    project_tips_dir,
+)
+
+SKIP = "— skip —"   # Locus value meaning "don't import this accession"
 
 st.set_page_config(page_title="Reference Taxa / Tips", page_icon="🌿", layout="wide")
 st.title("🌿 Reference Taxa / Tips")
@@ -50,48 +56,78 @@ if not ncbi_email:
     st.error("⚠️ Set your NCBI Entrez email on the **NCBI References** page before importing.")
     st.stop()
 
-# ── 1 · Paste accessions → auto-classify ──────────────────────────────────────
-st.subheader("1 · Paste accessions (auto-classified to locus)")
+# ── 1 · Paste accessions → look up → assign locus per accession ───────────────
+st.subheader("1 · Paste accessions")
 st.caption("One per line or comma/space-separated (e.g. a spreadsheet column, or accessions "
-           "copied from a publication or an NCBI BLAST result). Each is fetched, sorted to its "
-           "locus by its GenBank title, and stored as a tip.")
-pasted = st.text_area("Accessions", height=130, placeholder="MN123456\nKC584456.1\nDQ677938.1 …")
+           "from a publication or a web BLAST). Each is looked up on NCBI; you then **confirm or "
+           "correct the locus for each** before importing. RefSeq accessions pasted without the "
+           "underscore (`NR135944` → `NR_135944`) are auto-repaired.")
+pasted = st.text_area("Accessions", height=130, placeholder="MN123456\nKC584456.1\nNR_135944 …")
 
-if st.button("⬇️ Import & auto-classify", type="primary"):
-    accs = [a for chunk in pasted.replace(",", " ").split() for a in [chunk.strip()] if a]
+if st.button("🔎 Look up on NCBI", type="primary"):
+    accs = [c.strip() for c in pasted.replace(",", " ").split() if c.strip()]
     if not accs:
         st.warning("Paste at least one accession.")
     else:
-        with st.spinner(f"Fetching + classifying {len(accs)} accession(s)…"):
-            res = import_tip_accessions(accs, tips_dir)
-        st.session_state["tips_import"] = res
+        with st.spinner(f"Looking up {len(accs)} accession(s)…"):
+            st.session_state["tips_lookup"] = lookup_accessions(accs)
+        st.session_state.pop("tips_import_result", None)
 
-res = st.session_state.get("tips_import")
-if res:
-    assigned = res.get("assigned", {})
+lookup = st.session_state.get("tips_lookup")
+if lookup:
+    missing = [r for r in lookup if not r["found"]]
+    found = [r for r in lookup if r["found"]]
+    if missing:
+        st.warning("⚠️ Not found on NCBI (won't be imported — check the accession / database): "
+                   + ", ".join(f"`{r['input']}`"
+                               + ("" if r["input"] == r["accession"] else f" → `{r['accession']}`")
+                               for r in missing))
+    if found:
+        st.caption(f"Confirm or correct the locus for each, then import. Leave a row on "
+                   f"“{SKIP}” to omit it.")
+        loc_opts = [SKIP] + list(LOCUS_CATALOGUE)
+        df = pd.DataFrame([{
+            "Accession": r["accession"],
+            "Locus": r["locus_guess"] or SKIP,
+            "Title": r["title"],
+            "NCBI": f"https://www.ncbi.nlm.nih.gov/nuccore/{r['accession']}",
+        } for r in found])
+        edited = st.data_editor(
+            df, width="stretch", hide_index=True, key="tips_assign",
+            column_config={
+                "Accession": st.column_config.TextColumn(disabled=True),
+                "Locus": st.column_config.SelectboxColumn(options=loc_opts, required=True),
+                "Title": st.column_config.TextColumn("Title (NCBI)", disabled=True, width="large"),
+                "NCBI": st.column_config.LinkColumn("NCBI", display_text="open"),
+            },
+        )
+        n_guessed = sum(1 for r in found if r["locus_guess"])
+        st.caption(f"Auto-classified {n_guessed}/{len(found)} by GenBank title; the rest need a "
+                   f"locus picked (or left on “{SKIP}”).")
+        if st.button("⬇️ Import with these assignments", type="primary"):
+            assignments = {row["Accession"]: ("" if row["Locus"] == SKIP else row["Locus"])
+                           for _, row in edited.iterrows()}
+            if not any(assignments.values()):
+                st.warning("No rows assigned to a locus.")
+            else:
+                with st.spinner("Fetching + storing tips…"):
+                    st.session_state["tips_import_result"] = import_tips_with_assignments(
+                        assignments, tips_dir)
+                st.session_state.pop("tips_lookup", None)
+                st.rerun()
+
+result = st.session_state.get("tips_import_result")
+if result:
+    assigned = result.get("assigned", {})
     if assigned:
-        st.success("Assigned to loci:")
+        st.success("Imported tips:")
         st.dataframe(pd.DataFrame([{"Locus": loc, "Accessions": ", ".join(accs)}
                                    for loc, accs in assigned.items()]),
                      width="stretch", hide_index=True)
-    for err in res.get("errors", []):
+    for err in result.get("errors", []):
         st.warning(err)
-
-    unassigned = res.get("unassigned", [])
-    if unassigned:
-        st.warning(f"⚠️ {len(unassigned)} accession(s) could not be auto-classified "
-                   "(no clear single-locus title match): " + ", ".join(unassigned))
-        ua1, ua2 = st.columns([2, 1])
-        with ua1:
-            man_loc = st.selectbox("Assign these to locus", list(LOCUS_CATALOGUE))
-        with ua2:
-            st.write(""); st.write("")
-            if st.button("Assign unassigned"):
-                with st.spinner("Importing…"):
-                    r2 = import_tip_accessions(unassigned, tips_dir, force_locus=man_loc)
-                st.success(f"Assigned {len(unassigned)} to {man_loc}.")
-                st.session_state["tips_import"] = None
-                st.rerun()
+    if not assigned and not result.get("errors"):
+        st.info("Nothing imported.")
 
 st.markdown("---")
 st.caption("💡 Target-taxa search (≥3 accessions/locus to review) is planned as a second import "

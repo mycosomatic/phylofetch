@@ -10,7 +10,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from phylofetch.tips_utils import classify_locus, project_tips_dir
+import phylofetch.tips_utils as tips_utils
+from phylofetch.tips_utils import (
+    classify_locus,
+    import_tips_with_assignments,
+    lookup_accessions,
+    normalize_accession,
+    project_tips_dir,
+)
 
 
 class TestClassifyLocus:
@@ -47,6 +54,65 @@ class TestClassifyLocus:
         assert classify_locus("Homo sapiens beta-globin mRNA") is None
         assert classify_locus("Saccharomyces cerevisiae chromosome IV, complete sequence") is None
         assert classify_locus("") is None
+
+
+class TestNormalizeAccession:
+    """D-026: repair bare RefSeq accessions; leave GenBank ids untouched."""
+
+    def test_refseq_underscore_repaired(self):
+        assert normalize_accession("NR135944") == "NR_135944"      # the reported case
+        assert normalize_accession("NR135944.1") == "NR_135944.1"  # keeps the version
+        assert normalize_accession("nr135944") == "NR_135944"      # case-insensitive
+        assert normalize_accession("XM123456") == "XM_123456"      # other RefSeq prefix
+
+    def test_already_correct_and_genbank_untouched(self):
+        assert normalize_accession("NR_135944") == "NR_135944"     # already underscored
+        assert normalize_accession("KC584456") == "KC584456"       # GenBank 2+6
+        assert normalize_accession("KC584456.1") == "KC584456.1"
+        assert normalize_accession("MN908947") == "MN908947"
+        assert normalize_accession("AB12345") == "AB12345"         # too few digits → as-is
+        assert normalize_accession("  NR135944 ") == "NR_135944"   # whitespace stripped
+
+
+class TestLookupAccessions:
+    """D-026: per-accession lookup normalizes, flags not-found, suggests a locus."""
+
+    def test_lookup_rows_found_missing_and_guess(self, monkeypatch):
+        # Stub the network: NR_135944 (LSU rRNA) resolves; BADACC1 returns nothing.
+        def fake_titles(accs, db):
+            assert "NR_135944" in accs                      # normalized before lookup
+            return {"NR_135944": "Fungus 28S large subunit ribosomal RNA gene, partial sequence"}
+        monkeypatch.setattr(tips_utils, "_esummary_titles", fake_titles)
+
+        rows = lookup_accessions(["NR135944", "BADACC1"])
+        by_input = {r["input"]: r for r in rows}
+        assert by_input["NR135944"]["accession"] == "NR_135944"   # repaired
+        assert by_input["NR135944"]["found"] is True
+        assert by_input["NR135944"]["locus_guess"] == "LSU"       # classified from title
+        assert by_input["BADACC1"]["found"] is False              # not found → flagged
+        assert by_input["BADACC1"]["locus_guess"] is None
+
+
+class TestImportWithAssignments:
+    """D-026: per-accession locus assignment (not just one bulk locus)."""
+
+    def test_each_accession_to_its_own_locus(self, monkeypatch):
+        calls = []
+
+        def fake_fetch_and_store(group, locus, db, query, ref_dir):
+            calls.append((locus, list(group)))
+            return len(group), 0, []
+        monkeypatch.setattr(tips_utils, "fetch_and_store", fake_fetch_and_store)
+
+        res = import_tips_with_assignments(
+            {"NR135944": "LSU", "KC584456": "TEF1", "DQ677938": ""},   # last one skipped
+            tips_dir="/tmp/whatever")
+        grouped = {loc: accs for loc, accs in calls}
+        assert grouped["LSU"] == ["NR_135944"]      # normalized on the way in
+        assert grouped["TEF1"] == ["KC584456"]
+        assert "DQ677938" not in str(calls)         # blank-locus row not imported
+        assert set(res["assigned"]) == {"LSU", "TEF1"}
+        assert res["errors"] == []
 
 
 def test_project_tips_dir(tmp_path):

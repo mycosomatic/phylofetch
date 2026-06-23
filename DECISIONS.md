@@ -741,3 +741,35 @@ Format for each entry:
   into "both"/"library" guide construction, picker counts, opt-out, manifest note; +6 tests →
   part of **280 passing**. Production re-run of the affected loci is a one-click in-app action (the
   filter is now live); the data fix was verified on a representative previously-broken strain.
+
+### D-026 (2026-06-23) — Per-accession tip import: normalize accessions, assign locus per row, warn on lookup failure
+- **Decision:** Rework the Reference Taxa / Tips accession import from *paste → auto-classify →
+  bulk-reassign-the-leftovers-to-one-locus* into *paste → look up each on NCBI → **assign a locus
+  per accession** → import*. Three parts in `tips_utils`: (1) `normalize_accession` repairs a RefSeq
+  accession pasted without its underscore (`NR135944` → `NR_135944`) — anchored on a known RefSeq
+  two-letter prefix + ≥6 digits (`REFSEQ_PREFIXES`), so GenBank ids are never rewritten; applied in
+  every path. (2) `lookup_accessions` returns one row per input
+  (`input / accession / title / found / locus_guess`) and `_esummary_titles` now falls back to
+  per-id calls when a batch esummary rejects the whole batch over one bad id — so good accessions
+  still resolve and bad ones are isolated. (3) `import_tips_with_assignments(assignments)` fetches
+  each accession under the **locus the user chose for it** (blank = skip). `pages/7_Reference_Taxa.py`
+  now renders a `data_editor` (Accession · Locus selectbox pre-filled with the auto-guess · Title ·
+  NCBI link), warns explicitly about accessions that **did not resolve on NCBI**, and imports the
+  per-row assignments.
+- **Why:** Reported by the user: (a) `NR_135944` pasted as `NR135944` (works as a *URL* but not for
+  Entrez/BLAST) silently failed to populate and landed in "unassigned" with no indication it was a
+  *lookup* failure rather than an *ambiguous-title* failure; (b) the page could only bulk-assign all
+  unclassified accessions to a **single** locus, not each to its own. rDNA tips in particular arrive
+  as RefSeq `NR_` records, so the underscore case is common. Distinguishing "found but couldn't
+  classify" from "NCBI returned nothing" is the "warn if any fail to populate" the user asked for.
+- **Alternatives considered:** (a) **Only repair the underscore** — rejected: doesn't address the
+  per-accession assignment or the silent-failure warning. (b) **Auto-classify only, keep one bulk
+  fallback** — rejected: the user explicitly needs per-row control (a mixed paste spans many loci).
+  (c) **Guess the locus and import without confirmation** — rejected: classification from a GenBank
+  title is heuristic (multi-gene records tie to None); a confirm step before storing tips is safer.
+  (d) **Aggressively normalize any 2-letter+digits id** — rejected: would rewrite genuine GenBank
+  accessions; restricting to known RefSeq prefixes avoids collisions (GenBank never issues them).
+- **Status:** active. Implemented 2026-06-23. `tips_utils`: `REFSEQ_PREFIXES`, `normalize_accession`,
+  resilient `_esummary_titles`, `lookup_accessions`, `import_tips_with_assignments` (legacy
+  `classify_accessions` / `import_tip_accessions` retained + now normalize); `pages/7_Reference_Taxa.py`
+  rewritten import section; +3 tests → part of **280 passing**. Stub-render-verified.

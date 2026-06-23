@@ -198,6 +198,20 @@ user's decisions in that session.
   in-frame. Fix: filter project refs by length against the curated bundled-guide expectation
   (`expected_length` ± 30 %), drop-and-flag outliers, opt-out retained. The bundled guides remain the
   trusted full-length anchor.
+- _(2026-06-23) **Tip import: per-accession assignment + accession normalization** (D-026)._ Paste →
+  look up each on NCBI → assign a locus **per accession** (not one bulk locus) → import; bare RefSeq
+  accessions (`NR135944` → `NR_135944`) are auto-repaired and accessions that don't resolve are
+  warned, not silently dropped.
+- _(2026-06-23, **planned — orthology sanity check vs tips**)._ Reliable *full-CDS* references for
+  the standard coding markers are scarce in Alternaria (even the reference genome lacks clean
+  annotations for several), and most GenBank entries are **partial PCR amplicons** — which for some
+  species could even amplify a **paralog**. So a curated full-length guide alone can't confirm we
+  extracted the *intended* ortholog. Planned step: **align each isolate's extracted CDS against the
+  pulled tips** for that locus (the partial amplicons) and report agreement, so the user can confirm
+  orthology / catch paralog mismatches before committing to a tree. The aim is a defensible
+  phylogeny *against antecedent published data* whether or not that data is perfectly annotated.
+  Pairs naturally with the deferred RM-008 target-taxa tips search mode. (Tracked here so it isn't
+  lost; not yet built.)
 
 - _(2026-06-22) **NCBI References page repurposed** (D-023)._ With bundled universal protein guides
   the default extraction source (D-020), the References page is now optional: it fetches
