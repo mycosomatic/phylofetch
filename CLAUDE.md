@@ -63,7 +63,7 @@ phylofetch/
 │   ├── 0_Project_Setup.py
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
 │   ├── 2_NCBI_References.py     # optional taxon-closer guides, coding-only, RefSeq + length-aware candidate picker (D-023, D-024, D-025)
-│   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015)
+│   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015); prefer high-coverage array, drop off-array/RIP'd (D-028)
 │   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest; ref length filter (D-025)
 │   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
 │   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)

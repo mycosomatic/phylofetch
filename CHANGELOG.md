@@ -5,6 +5,15 @@
 
 ## 2026-06-23
 
+- **rDNA: prefer the high-coverage array, drop off-array/RIP'd copies (D-028).** ITSx made spurious
+  detections on chromosomal contigs — a 90 kb chunk of the 6.9 Mb NODE_1 (45×) gave a **60 kb "SSU"**
+  while the true SSU sat on the rDNA repeat contig (1193×). The wrapper now keeps only the
+  highest-coverage contig's detection per region (within 5×) and drops the rest. Coverage is
+  biologically meaningful: the functional rDNA is a high-copy array, so a single-copy (chromosomal)
+  detection is an off-array copy that may be RIP-pseudogenized. `parse_coverage`, coverage filter in
+  `run_itsx` (`prefer_high_cov`, default on) + `[cov=]` header tag + ITSx-page toggle; dropped copies
+  listed in the run log. +5 tests. (Known remaining: ITSx still extends LSU to the contig end on the
+  tandem-repeat array — a separate length-cap concern.)
 - **IQ-TREE binary auto-detect (prefers iqtree3).** The Tree page hard-coded `iqtree2`; it now
   resolves the binary from config tool-paths or auto-detects from PATH preferring the newest
   (`iqtree3` ▸ `iqtree2` ▸ `iqtree`), with an editable field + tool-check. IQ-TREE 3 is CLI-compatible

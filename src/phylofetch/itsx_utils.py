@@ -21,6 +21,8 @@ from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
 
 
+import re as _re
+
 # ITSx output file suffixes — one file per detected region
 ITSX_SUFFIXES: dict[str, str] = {
     "ITS1":     ".ITS1.fasta",
@@ -29,6 +31,24 @@ ITSX_SUFFIXES: dict[str, str] = {
     "SSU":      ".SSU.fasta",
     "LSU":      ".LSU.fasta",
 }
+
+# Prefer the rDNA detection on the highest-coverage contig (D-028). The functional rDNA is a
+# high-copy tandem array, so it assembles into a contig whose k-mer coverage is many-fold the
+# single-copy genomic background. A detection on a low-coverage contig is therefore an *off-array*
+# copy — a dispersed/orphan rDNA fragment that may be **RIP-pseudogenized** (the genomic analogue
+# of the low-abundance pseudogene ITS amplicons seen in PCR) — or an outright spurious HMM hit on a
+# chromosomal contig (which is where ITSx's 60 kb "SSU" / mislabelled regions come from). Within one
+# region, keep detections whose contig coverage is ≥ max_cov / RDNA_COV_RATIO; drop the rest.
+RDNA_COV_RATIO = 5.0
+
+_COV_RE = _re.compile(r"_cov_([0-9]+(?:\.[0-9]+)?)", _re.IGNORECASE)
+
+
+def parse_coverage(contig_name: str) -> Optional[float]:
+    """k-mer coverage parsed from a SPAdes/pilon-style contig name (``..._cov_45.8_pilon``),
+    or ``None`` when the name carries no coverage token (non-SPAdes assembler → no filtering)."""
+    m = _COV_RE.search(contig_name or "")
+    return float(m.group(1)) if m else None
 
 # ITSx runs HMMER's hmmscan, which aborts on any target sequence > 100 kb
 # ("Target sequence length > 100K, over comparison pipeline limit"). Genome-assembly contigs
@@ -89,15 +109,29 @@ def _build_description(fields: dict) -> str:
     return " ".join(f"[{k}={v}]" for k, v in fields.items() if v is not None)
 
 
-def _relabel_itsx_output(fasta_path: str, strain_id: str,
-                         locus_name: str, itsx_version: str = "") -> bool:
+def _orig_contig(rec_id: str) -> str:
+    """The original assembly contig name from an ITSx record id (strip the ``|coords`` field and
+    any ``__c<offset>`` chunk suffix added by :func:`chunk_long_contigs`)."""
+    contig = rec_id.split("|")[0] if "|" in rec_id else rec_id
+    if "__c" in contig:
+        contig = contig.rsplit("__c", 1)[0]
+    return contig
+
+
+def _relabel_itsx_output(fasta_path: str, strain_id: str, locus_name: str,
+                         itsx_version: str = "", prefer_high_cov: bool = True,
+                         cov_ratio: float = RDNA_COV_RATIO) -> dict:
     """
-    Relabel ITSx output headers to clean '>STRAIN_LOCUS' format with provenance.
-    Returns True if any records were relabeled.
+    Relabel ITSx output headers to clean '>STRAIN_LOCUS' format with provenance, de-duplicate
+    overlapping-chunk repeats, and (D-028) keep only detections on the highest-coverage contig.
+
+    Returns ``{"kept": n, "dropped": [(contig, cov, length), ...]}`` — ``kept`` is the number of
+    records written (0 ⇒ nothing usable for this region); ``dropped`` lists low-coverage off-array
+    detections removed (for the run log).
     """
     records = list(SeqIO.parse(fasta_path, "fasta"))
     if not records:
-        return False
+        return {"kept": 0, "dropped": []}
 
     # De-duplicate identical sequences: overlapping chunks (from chunk_long_contigs) can
     # report the same rDNA region more than once. Keep the first occurrence, preserve order.
@@ -111,24 +145,37 @@ def _relabel_itsx_output(fasta_path: str, strain_id: str,
         deduped.append(rec)
     records = deduped
 
+    # Coverage filter (D-028): drop detections whose contig coverage is far below the best — these
+    # are off-array (possibly RIP'd) copies or spurious chromosomal HMM hits.
+    dropped: list[tuple] = []
+    if prefer_high_cov and len(records) > 1:
+        covs = {id(r): parse_coverage(_orig_contig(r.id)) for r in records}
+        known = [c for c in covs.values() if c is not None]
+        if known:
+            cutoff = max(known) / cov_ratio
+            kept_records = []
+            for r in records:
+                c = covs[id(r)]
+                if c is not None and c < cutoff:
+                    dropped.append((_orig_contig(r.id), c, len(r.seq)))
+                else:
+                    kept_records.append(r)
+            records = kept_records
+
     ts = _now_utc()
     for i, rec in enumerate(records):
-        # Try to extract contig and coordinate info from ITSx header
-        # ITSx format: >CONTIG|START-END|...
-        contig = rec.id.split("|")[0] if "|" in rec.id else rec.id
-        if "__c" in contig:                       # strip chunk suffix -> original contig name
-            contig = contig.rsplit("__c", 1)[0]
+        contig = _orig_contig(rec.id)
         coords = ""
         if "|" in rec.description:
             parts = rec.description.split("|")
             if len(parts) >= 2:
                 coords = parts[1]
-
         suffix = f"_{i + 1}" if len(records) > 1 else ""
         desc = _build_description({
             "sample": strain_id, "locus": locus_name, "type": "rDNA",
             "contig": contig,
             "coords": coords or None,
+            "cov": f"{parse_coverage(contig):.0f}" if parse_coverage(contig) else None,
             "tool": "ITSx",
             "tool_version": itsx_version or None,
             "extracted": ts,
@@ -138,7 +185,7 @@ def _relabel_itsx_output(fasta_path: str, strain_id: str,
 
     with open(fasta_path, "w") as f:
         SeqIO.write(records, f, "fasta")
-    return True
+    return {"kept": len(records), "dropped": dropped}
 
 
 def run_itsx(
@@ -148,6 +195,8 @@ def run_itsx(
     threads: int = 4,
     itsx_bin: str = "ITSx",
     kingdom: str = "fungi",
+    prefer_high_cov: bool = True,
+    cov_ratio: float = RDNA_COV_RATIO,
 ) -> tuple[int, str, dict[str, str]]:
     """
     Run ITSx on an assembly to extract rDNA regions.
@@ -206,11 +255,20 @@ def run_itsx(
                    "after chunking).\n" + log_text), {}
 
     found: dict[str, str] = {}
+    drop_notes: list[str] = []
     for locus, suffix in ITSX_SUFFIXES.items():
         path = prefix + suffix
         if os.path.exists(path) and os.path.getsize(path) > 0:
-            if _relabel_itsx_output(path, strain_id, locus, itsx_version):
+            info = _relabel_itsx_output(path, strain_id, locus, itsx_version,
+                                        prefer_high_cov=prefer_high_cov, cov_ratio=cov_ratio)
+            if info["kept"]:
                 found[locus] = path
+            for contig, cov, length in info["dropped"]:
+                drop_notes.append(f"  {locus}: dropped off-array copy on {contig} "
+                                  f"(cov {cov:.0f}, {length} bp) — low-coverage / possibly RIP'd")
+    if drop_notes:
+        log_text += ("\n\nrDNA coverage filter (D-028) — kept the high-coverage array, dropped:\n"
+                     + "\n".join(drop_notes))
 
     return result.returncode, log_text, found
 

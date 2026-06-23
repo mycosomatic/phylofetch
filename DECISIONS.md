@@ -821,3 +821,35 @@ Format for each entry:
   `n_nt_only`); `pages/8_Codon_Tip_Prep.py`: toggle + blastn check + Nucleotide-only column; +6 tests
   → **286 passing**. Live-verified on the project's 25 TEF1 tips (all oriented into the genomic
   matrix, CDS/protein isolate-only); stub-render-verified.
+
+### D-028 (2026-06-23) — rDNA: prefer the high-coverage array (drop off-array / RIP'd copies)
+- **Decision:** When ITSx reports a region (SSU/LSU/ITS/…) on more than one contig, keep only the
+  detection(s) on the **highest-coverage contig** and drop those whose contig coverage is far below
+  it (< max_cov / `RDNA_COV_RATIO`, default 5×). New `parse_coverage()` (reads the SPAdes/pilon
+  `_cov_<float>` token); `_relabel_itsx_output` applies the filter and returns
+  `{"kept", "dropped"}`; `run_itsx` gains `prefer_high_cov` / `cov_ratio` and lists dropped copies
+  in its log; the ITSx page gets a default-on toggle. A `[cov=…]` tag is added to each kept header.
+  Falls back to keeping everything when the assembler emits no coverage token, or when a region has
+  a single detection.
+- **Why:** On real genomes ITSx made **spurious detections on chromosomal contigs** — a 90 kb chunk
+  of the 6.9 Mb NODE_1 (cov 45×) yielded a **60 kb "SSU"** (ITSx itself flagged it *"no 5.8S, ITS
+  region too long, broken/partial"*), while the true SSU sat on the rDNA repeat contig (cov 1193×,
+  2821 bp). The wrapper wrote every detection. Coverage is the right discriminator and carries
+  **biological meaning** (user insight): the functional rDNA is a high-copy tandem array → high
+  coverage; a detection at single-copy (chromosomal) coverage is an **off-array** copy that, sitting
+  outside the array, can be **RIP-pseudogenized** — the genomic analogue of the low-abundance
+  pseudogene ITS amplicons seen in PCR. Keeping the high-coverage array selects the functional,
+  non-RIP'd rDNA and discards misleading paralogs. Verified on the NS26 SSU case: the 60 kb / 45×
+  chromosomal copy is dropped, the 2821 bp / 1193× array copy kept.
+- **Alternatives considered:** (a) **Drop ITSx-flagged "problematic" + cap region lengths** —
+  considered (it would also catch the LSU over-extension on the *real* array, which coverage does
+  not), but the user chose coverage as the primary, biologically-grounded filter; a length cap
+  remains a possible follow-up for the tandem-repeat LSU. (b) **Keep all, just warn** — rejected:
+  the giant spurious regions poison downstream alignment if not removed. (c) **Hard single-contig
+  (keep only the max-cov contig)** — rejected in favour of a ratio band, so a legitimately
+  fragmented array split across two similar-coverage contigs is retained.
+- **Status:** active. Implemented 2026-06-23. `itsx_utils`: `RDNA_COV_RATIO`, `parse_coverage`,
+  `_orig_contig`, coverage filter in `_relabel_itsx_output`, `prefer_high_cov`/`cov_ratio` on
+  `run_itsx` + log notes; `pages/3_ITSx_rDNA.py` toggle. +5 tests. **Known remaining:** LSU on the
+  real array is still extended to the contig end by ITSx (tandem repeat) — a separate length-cap
+  concern, not addressed here.

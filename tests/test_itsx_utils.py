@@ -14,17 +14,69 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from phylofetch.itsx_utils import (
     ITSX_SUFFIXES,
     _probe_itsx_version,
+    _relabel_itsx_output,
     chunk_long_contigs,
     combine_rdna_regions,
+    parse_coverage,
     place_rdna_regions,
     run_itsx,
 )
+
+
+class TestCoverageFilter:
+    """D-028: prefer the high-coverage rDNA array; drop low-coverage off-array (RIP'd/spurious)."""
+
+    def test_parse_coverage(self):
+        assert parse_coverage("NODE_1_length_6920269_cov_45.858574_pilon") == 45.858574
+        assert parse_coverage("NODE_12_length_22758_cov_1193.220177_pilon") == 1193.220177
+        assert parse_coverage("scaffold_no_cov_token") is None
+        assert parse_coverage("") is None
+
+    def _write(self, path, recs):
+        SeqIO.write([SeqRecord(Seq(s), id=rid, description=rid) for rid, s in recs], str(path), "fasta")
+
+    def test_drops_low_coverage_offarray_copy(self, tmp_path):
+        # The real NS26 SSU case: a 60 kb spurious hit on the 45x chromosome + the true 2821 bp
+        # region on the 1193x rDNA array. The chromosomal copy must be dropped.
+        f = tmp_path / "NS26.SSU.fasta"
+        self._write(f, [
+            ("NODE_1_length_6920269_cov_45.858574_pilon|1-60084|", "A" * 60084),
+            ("NODE_12_length_22758_cov_1193.220177_pilon|1-2821|", "C" * 2821),
+        ])
+        info = _relabel_itsx_output(str(f), "NS26-3-C2", "SSU")
+        assert info["kept"] == 1
+        assert len(info["dropped"]) == 1 and info["dropped"][0][1] == 45.858574
+        kept = list(SeqIO.parse(str(f), "fasta"))
+        assert len(kept) == 1 and len(kept[0].seq) == 2821       # the array copy, not the 60 kb one
+        assert "[cov=1193]" in kept[0].description
+
+    def test_single_detection_kept_regardless(self, tmp_path):
+        f = tmp_path / "x.SSU.fasta"
+        self._write(f, [("NODE_5_length_9000_cov_30.0_pilon|1-1800|", "G" * 1800)])
+        info = _relabel_itsx_output(str(f), "S1", "SSU")
+        assert info["kept"] == 1 and info["dropped"] == []        # nothing to compare against
+
+    def test_no_coverage_tokens_keeps_all(self, tmp_path):
+        f = tmp_path / "y.SSU.fasta"
+        self._write(f, [("contigA|1-1800|", "G" * 1800), ("contigB|1-1700|", "T" * 1700)])
+        info = _relabel_itsx_output(str(f), "S1", "SSU")
+        assert info["kept"] == 2 and info["dropped"] == []        # un-parseable cov → no filtering
+
+    def test_filter_can_be_disabled(self, tmp_path):
+        f = tmp_path / "z.SSU.fasta"
+        self._write(f, [
+            ("NODE_1_length_9_cov_45.0_pilon|1-60000|", "A" * 60000),
+            ("NODE_2_length_9_cov_1200.0_pilon|1-2800|", "C" * 2800),
+        ])
+        info = _relabel_itsx_output(str(f), "S1", "SSU", prefer_high_cov=False)
+        assert info["kept"] == 2 and info["dropped"] == []
 
 
 class TestChunkLongContigs:

@@ -91,6 +91,12 @@ with s2:
     )
 with s3:
     threads = st.number_input("Threads", 1, 64, 4)
+    prefer_high_cov = st.checkbox(
+        "Prefer high-coverage rDNA array", value=True,
+        help="Keep only the rDNA detection on the highest-coverage contig (the functional, "
+             "high-copy tandem array). Low-coverage off-array copies — dispersed/orphan rDNA that "
+             "may be RIP-pseudogenized, or spurious HMM hits on chromosomal contigs (the source of "
+             "giant 60 kb 'SSU' extractions) — are dropped. (D-028)")
 
 itsx_ok = shutil.which(itsx_bin) is not None
 if not itsx_ok:
@@ -119,7 +125,8 @@ if st.button("🚀 Run ITSx", type="primary", disabled=not (sel and regions and 
             continue
         with st.spinner(f"[{sid}] ITSx…"):
             rc, log, found = run_itsx(assembly, str(strain_out / "_itsx_tmp"), sid,
-                                      threads=int(threads), itsx_bin=itsx_bin, kingdom=kingdom)
+                                      threads=int(threads), itsx_bin=itsx_bin, kingdom=kingdom,
+                                      prefer_high_cov=prefer_high_cov)
         if rc != 0:
             st.error(f"{sid}: ITSx failed (exit {rc})")
             with st.expander(f"{sid} — ITSx log"):
