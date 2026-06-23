@@ -62,7 +62,7 @@ phylofetch/
 ├── pages/                 # Streamlit multi-page app (component-page workflow, D-012)
 │   ├── 0_Project_Setup.py
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
-│   ├── 2_NCBI_References.py     # optional taxon-closer protein/nucleotide guides, coding-only (D-023, D-013, D-011)
+│   ├── 2_NCBI_References.py     # optional taxon-closer guides, coding-only, RefSeq candidate picker (D-024, D-023)
 │   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015)
 │   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST amplicon | gene-of-interest
 │   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)

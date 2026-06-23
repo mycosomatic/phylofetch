@@ -288,6 +288,14 @@ def fetch_record_with_meta(
 
 _TYPE_FILTER = "sequence_from_type[filter]"
 
+# RefSeq genome-annotation restriction (D-024). `srcdb_refseq[prop]` keeps only RefSeq records
+# (XP_/NP_ for eukaryotes), i.e. full-length proteins predicted from annotated genome assemblies
+# — the "closest annotated genome" the References page wants for extraction guides. Verified live:
+# `refseq[filter]` does NOT work for this (0 hits with a [Protein Name] query); `srcdb_refseq[prop]`
+# is the property that matches (e.g. Alternaria TEF1: 4172 protein records, only 3 RefSeq — the
+# rest are partial-CDS barcode translations, including a 5-aa fragment).
+_REFSEQ_FILTER = "srcdb_refseq[prop]"
+
 
 def _esearch_ids(db: str, term: str, max_results: int) -> list[str]:
     handle = Entrez.esearch(db=db, term=term, retmax=max_results)
@@ -297,11 +305,18 @@ def _esearch_ids(db: str, term: str, max_results: int) -> list[str]:
 
 
 def _summary_to_dict(s) -> dict:
+    title = str(s.get("Title", ""))
+    organism = str(s.get("Organism", ""))
+    # Protein esummary doesn't populate Organism, but the title ends with "...[Organism]"
+    # (e.g. "elongation factor 1-alpha [Paraphaeosphaeria sp.]") — parse it so the candidate
+    # picker can show which taxon each reference comes from (D-024; cf. the D-014 stitle finding).
+    if not organism and title.endswith("]") and "[" in title:
+        organism = title[title.rfind("[") + 1:-1].strip()
     return {
         "uid":       str(s.get("Id", "")),
         "accession": str(s.get("AccessionVersion", "")),
-        "title":     str(s.get("Title", "")),
-        "organism":  str(s.get("Organism", "")),
+        "title":     title,
+        "organism":  organism,
         "length":    int(s.get("Length", 0)),
     }
 
@@ -412,11 +427,11 @@ def taxon_fallbacks(taxon: str) -> list[str]:
 
 def search_ncbi_protein(gene_name, organism: str,
                         max_results: int = 20, type_mode: str = "all",
-                        field: str = "Protein Name") -> list[dict]:
-    return _search_ncbi(
-        "protein", build_entrez_query(gene_name, organism, field=field),
-        max_results, type_mode,
-    )
+                        field: str = "Protein Name", refseq_only: bool = False) -> list[dict]:
+    query = build_entrez_query(gene_name, organism, field=field)
+    if refseq_only:
+        query = f"{query} AND {_REFSEQ_FILTER}"     # genome-annotated, full-length (D-024)
+    return _search_ncbi("protein", query, max_results, type_mode)
 
 
 def search_ncbi_nucleotide(gene_name, organism: str,
@@ -428,15 +443,19 @@ def search_ncbi_nucleotide(gene_name, organism: str,
 
 
 def ncbi_search_count(gene_name, organism: str, db: str = "nucleotide",
-                      field: str = "Title", type_mode: str = "all") -> int:
+                      field: str = "Title", type_mode: str = "all",
+                      refseq_only: bool = False) -> int:
     """
     Total number of NCBI matches for a (synonym) query, without fetching the IDs — a cheap
     esearch with ``retmax=0`` returning the ``Count``. Used by the References page to preview
     how many references each locus would yield before fetching. ``type_mode="type_only"``
-    counts only sequence-from-type records; "prefer"/"all" return the full count.
+    counts only sequence-from-type records; ``refseq_only=True`` restricts to RefSeq genome-
+    annotated records (D-024); "prefer"/"all" return the full count.
     """
     _require_email()
     query = build_entrez_query(gene_name, organism, field=field)
+    if refseq_only:
+        query = f"{query} AND {_REFSEQ_FILTER}"
     if type_mode == "type_only":
         query = f"{query} AND {_TYPE_FILTER}"
     handle = Entrez.esearch(db=db, term=query, retmax=0)

@@ -34,7 +34,6 @@ from phylofetch.ncbi_utils import (
     load_ref_records,
     locus_ref_fasta,
     locus_search_terms,
-    ncbi_search_count,
     project_ref_dir,
     search_ncbi_nucleotide,
     search_ncbi_protein,
@@ -100,31 +99,36 @@ taxon = st.text_input(
          "back to the genus.",
 )
 
-cta, ctb = st.columns(2)
-with cta:
+c1, c2, c3 = st.columns([1.2, 1.2, 1])
+with c1:
     ref_type_label = st.radio(
-        "Reference type", ["Protein (recommended for coding)", "Nucleotide"], horizontal=False,
-        help="Protein → Exonerate uses protein2genome: a protein query is intron-free and "
-             "pins the reading frame, giving clean frame-checked CDS even from a congener "
-             "(cross-species works) — this is what supplements the bundled guides. Nucleotide → "
-             "genomic barcodes for the relaxed-BLAST amplicon path / GenBank-comparable trees.",
-    )
-with ctb:
-    type_mode_label = st.radio(
-        "Type material", ["Prefer type", "All", "Type only"], horizontal=False,
-        help="Prefer type: type-derived records sorted first. All: no preference. "
-             "Type only: restrict to NCBI 'sequence from type material' (nucleotide barcodes).",
+        "Reference type", ["Protein (recommended for coding)", "Nucleotide"],
+        help="Protein → Exonerate protein2genome guide (frame-safe; supplements the bundled "
+             "universal guides on the Exonerate page). Nucleotide → genomic barcodes for the "
+             "relaxed-BLAST amplicon path.",
     )
 ref_type = "protein" if ref_type_label.startswith("Protein") else "nucleotide"
-type_mode = {"Prefer type": "prefer", "All": "all", "Type only": "type_only"}[type_mode_label]
+with c2:
+    if ref_type == "protein":
+        refseq_only = st.checkbox(
+            "RefSeq genome-annotated only", value=True,
+            help="Keep only RefSeq XP_/NP_ proteins — full-length orthologs from annotated "
+                 "genomes, not partial-CDS barcode translations (the latter include junk like a "
+                 "5-aa 'TEF1' fragment). With this on, a novel species with no RefSeq protein "
+                 "correctly falls back to the genus. Uncheck only if your lineage has no RefSeq "
+                 "for a marker — then broaden the taxon or use the bundled guides.")
+        min_len = st.number_input("Min length (aa)", value=100, min_value=0, max_value=5000, step=25)
+    else:
+        refseq_only = False
+        min_len = st.number_input("Min length (bp)", value=300, min_value=0, max_value=20000, step=50)
+with c3:
+    preselect = st.number_input(
+        "Pre-tick top N / locus", value=2, min_value=1, max_value=10,
+        help="Candidates are sorted RefSeq + longest first; the top N are pre-ticked. Exonerate "
+             "needs only one good ortholog — adjust the ticks before fetching.")
 if ref_type == "protein":
-    st.caption("🧬 **Protein** references (protein2genome, frame-safe) — these layer onto the "
-               "bundled universal guides on the Exonerate page as a taxon-closer ortholog.")
-
-
-def _locus_db(loc: str) -> str:
-    """rRNA has no protein, so rDNA is always nucleotide; coding follows the chosen type."""
-    return "nucleotide" if loc in RDNA else ref_type
+    st.caption("🧬 **Protein** guides layer onto the bundled universal core on the Exonerate page; "
+               "RefSeq-only pulls the closest *annotated-genome* ortholog and skips barcode junk.")
 
 
 def _field_for(db: str) -> str:
@@ -171,140 +175,142 @@ for i, loc in enumerate(CODING):
 
 st.markdown("---")
 
-# ── 3 · Preview & fetch ───────────────────────────────────────────────────────
-st.subheader("3 · Preview & fetch")
+# ── 3 · Find & pick references ───────────────────────────────────────────────────────
+st.subheader("3 · Find & pick references")
+_REFSEQ_PREFIXES = ("XP_", "NP_", "WP_", "YP_")
+
+
+def _is_refseq(acc: str) -> bool:
+    return acc[:3] in _REFSEQ_PREFIXES
+
+
 if not selected:
     st.info("Tick one or more loci above.")
 elif not taxon.strip():
     st.warning("Enter a taxon above to search.")
 else:
-    cprev, cmax = st.columns([1, 2])
-    with cprev:
-        do_preview = st.button("🔍 Preview hit counts", type="primary")
-    with cmax:
-        max_per = st.slider("Max references to fetch per locus", 1, 50, 15)
-
-    if do_preview:
-        counts: dict[str, int] = {}
+    if st.button("🔍 Find candidates", type="primary"):
+        cands: dict[str, list] = {}
         used_tax: dict[str, str] = {}
-        dbs: dict[str, str] = {}
         prog = st.progress(0.0)
         for i, loc in enumerate(selected):
-            db = _locus_db(loc)
-            fld = _field_for(db)
             terms = locus_search_terms(loc)
-            n, used = 0, taxon.strip()
-            for cand in taxon_fallbacks(taxon):     # exact taxon → genus
+            hits, used = [], taxon.strip()
+            for cand_tax in taxon_fallbacks(taxon):       # exact taxon → genus
+                used = cand_tax
                 try:
-                    c = ncbi_search_count(terms, cand, db=db, field=fld, type_mode=type_mode)
-                except Exception as e:              # noqa: BLE001 — surface to UI
-                    c = -1
-                    st.warning(f"{loc} ({cand}): {e}")
-                used = cand
-                if c > 0:
-                    n = c
+                    if ref_type == "protein":
+                        h = search_ncbi_protein(terms, cand_tax, max_results=40,
+                                                field="Protein Name", refseq_only=refseq_only)
+                    else:
+                        h = search_ncbi_nucleotide(terms, cand_tax, max_results=40)
+                except Exception as e:                    # noqa: BLE001 — surface to UI
+                    st.warning(f"{loc} ({cand_tax}): {e}")
+                    h = []
+                h = [x for x in h if x.get("length", 0) >= int(min_len)]
+                if h:
+                    hits = h
                     break
-            counts[loc], used_tax[loc], dbs[loc] = n, used, db
+            hits.sort(key=lambda x: (_is_refseq(x.get("accession", "")), x.get("length", 0)),
+                      reverse=True)
+            cands[loc], used_tax[loc] = hits, used
             prog.progress((i + 1) / len(selected))
-        st.session_state["ref_preview"] = {
-            "taxon": taxon, "type_mode": type_mode, "ref_type": ref_type,
-            "counts": counts, "used_tax": used_tax, "dbs": dbs,
+        st.session_state["ref_cands"] = {
+            "taxon": taxon, "ref_type": ref_type, "refseq_only": refseq_only,
+            "min_len": int(min_len), "preselect": int(preselect),
+            "cands": cands, "used_tax": used_tax,
         }
 
-    preview = st.session_state.get("ref_preview")
-    if (preview and preview["taxon"] == taxon and preview["type_mode"] == type_mode
-            and preview.get("ref_type") == ref_type):
-        counts = preview["counts"]
-        used_tax = preview["used_tax"]
-        dbs = preview["dbs"]
-        rows, mismatches = [], []
+    data = st.session_state.get("ref_cands")
+    if data and data["taxon"] == taxon and data["ref_type"] == ref_type:
+        cands, used_tax = data["cands"], data["used_tax"]
+        ncbi_db = "protein" if ref_type == "protein" else "nuccore"
+        rows, empty, mism = [], [], []
         for loc in selected:
-            db = dbs.get(loc, "?")
             ex = _existing_ref_type(loc)
-            mism = ex is not None and ex != db
+            is_mism = ex is not None and ex != ref_type
+            if is_mism:
+                mism.append((loc, ex))
+            lst = cands.get(loc, [])
+            if not lst:
+                empty.append(loc)
+            for j, h in enumerate(lst):
+                acc = h.get("accession", "")
+                rows.append({
+                    "Keep?": (not is_mism) and (j < data["preselect"]),
+                    "Locus": loc,
+                    "Accession": acc,
+                    "Organism": h.get("organism", ""),
+                    "Length": h.get("length", 0),
+                    "RefSeq": "✓" if _is_refseq(acc) else "",
+                    "Taxon": used_tax.get(loc, "")
+                             + (" (genus)" if used_tax.get(loc, "") != taxon.strip() else ""),
+                    "NCBI": f"https://www.ncbi.nlm.nih.gov/{ncbi_db}/{acc}",
+                })
+        if rows:
+            st.caption("Tick the references to fetch — sorted RefSeq + longest first, top "
+                       f"{data['preselect']} pre-ticked. One good full-length ortholog per locus "
+                       "is plenty for an Exonerate guide.")
+            edited = st.data_editor(
+                pd.DataFrame(rows), width="stretch", hide_index=True,
+                key=f"refed_{ref_type}_{data['refseq_only']}_{data['min_len']}_{len(rows)}",
+                column_config={
+                    "Keep?": st.column_config.CheckboxColumn(),
+                    "Length": st.column_config.NumberColumn(format="%d"),
+                    "NCBI": st.column_config.LinkColumn("NCBI", display_text="open"),
+                },
+                disabled=["Locus", "Accession", "Organism", "Length", "RefSeq", "Taxon", "NCBI"],
+            )
             if mism:
-                mismatches.append((loc, ex, db))
-            rows.append({
-                "Locus": loc,
-                "Fetch type": db,
-                "Existing": (f"⚠️ {ex}" if mism else (ex or "—")),
-                "Taxon used": used_tax.get(loc, taxon) + (" (genus fallback)"
-                              if used_tax.get(loc, "") != taxon.strip() else ""),
-                "NCBI hits": counts.get(loc, "—"),
-                "Will fetch": (0 if (mism or counts.get(loc, 0) <= 0)
-                               else min(counts[loc], max_per)),
-            })
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+                st.warning("⚠️ Type mismatch (left unticked, will skip): "
+                           + " · ".join(f"`{loc}` already holds **{ex}**" for loc, ex in mism)
+                           + " — clear it in Review library / Manage Data before fetching the "
+                           "other type (mixing protein + nucleotide in one file breaks Exonerate).")
+            if empty:
+                st.caption("No candidates for: " + ", ".join(f"`{l}`" for l in empty)
+                           + " — broaden the taxon (genus → family/order), relax RefSeq / min "
+                           "length, or just use the bundled guides for these.")
 
-        if mismatches:
-            st.warning(
-                "⚠️ **Reference-type mismatch** — these loci already hold a *different* reference "
-                "type and will be **skipped** (mixing protein + nucleotide in one locus file "
-                "breaks Exonerate model selection). Clear them first in **Review library** below "
-                "or in **Project Setup → Manage Data**:\n\n"
-                + "  ·  ".join(f"`{loc}`: have **{ex}**, fetching **{db}**"
-                              for loc, ex, db in mismatches)
-            )
-
-        if st.button("⬇️ Fetch selected loci", type="primary"):
-            results: dict[str, tuple] = {}
-            prog = st.progress(0.0)
-            for i, loc in enumerate(selected):
-                db, used, terms = dbs[loc], used_tax[loc], locus_search_terms(loc)
-                ex = _existing_ref_type(loc)
-                if ex is not None and ex != db:        # don't mix types in one locus file
-                    results[loc] = (0, 0, f"skipped: library already has {ex} refs (not {db}) — "
-                                          "clear it first")
-                    prog.progress((i + 1) / len(selected))
-                    continue
-                n = counts.get(loc, 0)
-                if n <= 0:
-                    results[loc] = (0, 0, "no hits to fetch")
-                    prog.progress((i + 1) / len(selected))
-                    continue
-                fld = _field_for(db)
-                want = min(n, max_per)
-                try:
-                    if db == "protein":
-                        # over-fetch then prefer genome-annotated RefSeq (XP_/NP_…) full-length
-                        # proteins over short barcode-translation "partial" fragments — these
-                        # give complete, frame-clean orthologs for protein2genome.
-                        pool = search_ncbi_protein(terms, used, max_results=min(max(want * 3, 30), 100),
-                                                   type_mode=type_mode, field=fld)
-
-                        def _rank(h):
-                            acc = h.get("accession", "")
-                            return (acc[:3] in ("XP_", "NP_", "WP_", "YP_"), h.get("length", 0))
-
-                        pool.sort(key=_rank, reverse=True)
-                        hits = pool[:want]
+            n_keep = int((edited["Keep?"] == True).sum())
+            if st.button(f"⬇️ Fetch {n_keep} ticked reference(s)", type="primary",
+                         disabled=n_keep == 0):
+                keep = edited[edited["Keep?"] == True]
+                results: dict[str, str] = {}
+                locs_kept = sorted(set(keep["Locus"]))
+                prog = st.progress(0.0)
+                for i, loc in enumerate(locs_kept):
+                    accs = keep[keep["Locus"] == loc]["Accession"].tolist()
+                    ex = _existing_ref_type(loc)
+                    if ex is not None and ex != ref_type:
+                        results[loc] = f"skipped — library already has {ex} refs"
                     else:
-                        hits = search_ncbi_nucleotide(terms, used, max_results=want, type_mode=type_mode)
-                    accs = [h["accession"] for h in hits if h.get("accession")]
-                    resolved = build_entrez_query(terms, used, field=fld)
-                    added, skipped, errors = fetch_and_store(
-                        accs, loc, db=db,
-                        query=f"{resolved} [{db}, taxon={used}, type_mode={type_mode}]",
-                        ref_dir=ref_dir,
-                    )
-                    results[loc] = (added, skipped, "; ".join(errors))
-                except Exception as e:                      # noqa: BLE001 — surface to UI
-                    results[loc] = (0, 0, str(e))
-                prog.progress((i + 1) / len(selected))
-
-            update_step(
-                project_dir, "references", status="done",
-                outputs={loc: {"in_library": count_refs(loc, ref_dir=ref_dir),
-                               "db": dbs.get(loc, ""), "taxon": used_tax.get(loc, "")}
-                         for loc in selected},
-                notes=f"taxon={taxon}; ref_type={ref_type}; loci={','.join(selected)}; "
-                      f"type_mode={type_mode}",
-            )
-            st.success("Fetch complete — provenance recorded in the project manifest.")
-            for loc, (added, skipped, err) in results.items():
-                st.write(f"**{loc}**: +{added} added · {skipped} already present"
-                         + (f" · ⚠️ {err}" if err else ""))
-            st.rerun()
+                        resolved = build_entrez_query(locus_search_terms(loc), used_tax.get(loc, ""),
+                                                      field=_field_for(ref_type))
+                        try:
+                            added, skipped, errs = fetch_and_store(
+                                accs, loc, db=ref_type, ref_dir=ref_dir,
+                                query=f"{resolved} [{ref_type}, taxon={used_tax.get(loc, '')}, "
+                                      f"refseq_only={data['refseq_only']}]")
+                            results[loc] = (f"+{added} added · {skipped} already present"
+                                            + (f" · ⚠️ {'; '.join(errs)}" if errs else ""))
+                        except Exception as e:            # noqa: BLE001 — surface to UI
+                            results[loc] = f"error: {e}"
+                    prog.progress((i + 1) / len(locs_kept))
+                update_step(
+                    project_dir, "references", status="done",
+                    outputs={loc: {"in_library": count_refs(loc, ref_dir=ref_dir),
+                                   "db": ref_type, "taxon": used_tax.get(loc, "")}
+                             for loc in locs_kept},
+                    notes=f"taxon={taxon}; ref_type={ref_type}; refseq_only={data['refseq_only']}; "
+                          f"loci={','.join(locs_kept)}")
+                st.success("Fetch complete — provenance recorded in the manifest.")
+                for loc, msg in results.items():
+                    st.write(f"**{loc}**: {msg}")
+                st.session_state.pop("ref_cands", None)
+                st.rerun()
+        else:
+            st.warning("No candidates found. Broaden the taxon, relax RefSeq / min length, or just "
+                       "use the bundled guides (they already cover coding loci kingdom-wide).")
 
 st.markdown("---")
 

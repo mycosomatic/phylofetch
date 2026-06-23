@@ -662,3 +662,42 @@ Format for each entry:
   References page reframed + coding-only. **268 passing** (was 266). Both pages stub-render-verified
   (Exonerate "both" mode resolves project protein refs; References shows no rDNA checkboxes).
   Refines D-017 / D-020; no roadmap (RM) item — an architecture refinement of the extraction front.
+
+### D-024 (2026-06-22) — RefSeq-restricted protein references + candidate picker (fixes junk refs)
+- **Decision:** Fix the References-page protein fetch, which was surfacing junk (e.g. a **5-aa
+  "TEF1"** for *Alternaria eureka*). (1) **Restrict protein references to RefSeq genome-annotated
+  proteins** via `srcdb_refseq[prop]` — full-length XP_/NP_ orthologs from annotated genomes, i.e.
+  the "closest annotated genome" the user asked for. New `refseq_only` param on
+  `search_ncbi_protein` / `ncbi_search_count`; a **RefSeq-only checkbox** (default on for protein,
+  relaxable) on the page. (2) Replace blind auto-fetch-top-N with a **candidate picker**: each
+  candidate (accession · organism · length · RefSeq) is shown with a checkbox, sorted RefSeq +
+  longest first, the top **N pre-ticked (default 2, not 15)**; the user picks/replaces exactly what
+  to keep. (3) A **min-length guard** (default 100 aa) backstops the relaxed case. (4) Parse the
+  organism from the protein **title** (`...[Organism]`) since protein esummary leaves `Organism`
+  empty (cf. the D-014 `stitle` finding). (5) **Remove the legacy Type-material toggle** — type
+  material is a *comparison-tips* concern (D-007), not an extraction-guide one (declutter, the user
+  flagged old cruft).
+- **Why:** Diagnosed **live**: the per-locus taxon fallback (species → genus) stopped at the exact
+  novel species the moment it had **≥1** hit — and *Alternaria eureka* has exactly one TEF1 protein
+  record, the 5-aa fragment `AGN53779.1` — so it never reached the genus, and with no quality
+  filter the fragment was fetched ("stuck": re-fetching deterministically grabbed the same junk).
+  RefSeq restriction fixes the whole chain at once: the novel species has **0** RefSeq proteins →
+  the fallback correctly proceeds to the genus → full-length annotated orthologs. Verified live:
+  *Alternaria eureka* → 0 RefSeq; *Alternaria* → 3 RefSeq TEF1 (457–814 aa; *A. arborescens* /
+  *rosae* / *burnsii*). Of 4172 *Alternaria* "TEF1 protein" records only **3** are RefSeq — the rest
+  are partial-CDS barcode translations. **Implementation finding:** `refseq[filter]` does **not**
+  work for this (0 hits with a `[Protein Name]` query); the working property is `srcdb_refseq[prop]`.
+  The picker addresses the user's "let me grab a different reference" and "I don't want 15".
+- **Alternatives considered:** (a) **Hard RefSeq-only, no escape** — rejected: some markers/lineages
+  lack a RefSeq protein; the checkbox is relaxable and the min-length + manual pick + editable taxon
+  (broaden genus → family/order) cover that case. (b) **Keep auto-top-N, only add the RefSeq
+  filter** — rejected: the user wants to choose/replace specific references, not trust a blind pick.
+  (c) **Resolve the single closest annotated genome assembly → its linked protein** (Assembly DB →
+  elink) — deferred: heavier; RefSeq + editable taxon + picker already give "closest annotated"
+  control. (d) **`refseq[filter]`** — rejected, returns 0 (verified live); `srcdb_refseq[prop]` is
+  the correct property.
+- **Status:** active. Implemented 2026-06-22. `ncbi_utils`: `_REFSEQ_FILTER`, `refseq_only` on
+  `search_ncbi_protein` / `ncbi_search_count`, title→organism parse in `_summary_to_dict`; +3 tests
+  (refseq filter, two summary-parse) → **271 passing** (was 268). References page rewritten with the
+  candidate picker + RefSeq checkbox + min-length, Type-material removed; live-verified end to end
+  (novel-species → genus fallback, clean RefSeq candidates, organisms shown) and stub-render-verified.

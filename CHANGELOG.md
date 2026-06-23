@@ -5,6 +5,25 @@
 
 ## 2026-06-22
 
+- **Fix junk protein references — RefSeq-restricted + candidate picker (D-024).** The References
+  page was fetching garbage (a **5-aa "TEF1"** for *Alternaria eureka*): the per-locus taxon
+  fallback stopped at the exact novel species because it had one hit (the 5-aa fragment), never
+  reaching the genus, and there was no quality filter.
+  - `ncbi_utils`: restrict protein refs to **RefSeq genome-annotated** proteins via
+    `srcdb_refseq[prop]` (`refseq_only` param on `search_ncbi_protein` / `ncbi_search_count`).
+    Verified live that `refseq[filter]` does **not** work (0 hits) but `srcdb_refseq[prop]` does;
+    parse the organism from the protein title (`...[Organism]`) since protein esummary leaves
+    `Organism` empty.
+  - `pages/2_NCBI_References.py`: blind auto-fetch-top-N → a **candidate picker** (per-candidate
+    checkboxes: accession · organism · length · RefSeq; sorted RefSeq + longest first; top **2**
+    pre-ticked, not 15), a **RefSeq-only checkbox** (default on, relaxable), a **min-length** guard,
+    and the legacy **Type-material toggle removed** (a comparison-tips concern, D-007).
+  - **Live-verified end to end:** *Alternaria eureka* → 0 RefSeq → falls back to genus; *Alternaria*
+    → 3 clean full-length RefSeq TEF1 (457–814 aa; *A. arborescens/rosae/burnsii*). Of 4172
+    *Alternaria* "TEF1 protein" records, only 3 are RefSeq.
+  - Tests: +3 → **271 passing** (was 268). Page stub-render-verified (picker rows, RefSeq ordering,
+    pre-ticks).
+
 - **NCBI References repurposed — taxon-closer guide supplement, coding-only (D-023).** Since the
   bundled universal protein guides (D-020) are the default extraction source, the References page
   is now optional and reframed to fetch **taxon-closer protein** orthologs that *supplement* the
