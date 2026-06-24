@@ -219,6 +219,13 @@ user's decisions in that session.
   phylogeny *against antecedent published data* whether or not that data is perfectly annotated.
   Pairs naturally with the deferred RM-008 target-taxa tips search mode. (Tracked here so it isn't
   lost; not yet built.)
+  - _(2026-06-24) — **BUILT (D-036)**:_ the **Orthology Check** page (`12_Orthology_Check.py`,
+    `orthology_utils.py`) aligns each locus's isolates + tips (MAFFT), builds a p-distance NJ tree,
+    and flags divergence outliers **source-blind** (a reference amplicon is judged like an extraction),
+    so a paralog — Exonerate's *or* a published reference's — is caught before the tree. Default
+    substrate genomic; CDS/protein selectable. **Still deferred:** wiring it as a manifest
+    `workflow.steps` entry + Workflow-page checklist item (currently a standalone page, no orphan
+    step) — do this when it joins a named strategy.
 
 - _(2026-06-22) **NCBI References page repurposed** (D-023)._ With bundled universal protein guides
   the default extraction source (D-020), the References page is now optional: it fetches
@@ -289,6 +296,38 @@ These confirmed-but-lower-severity findings were deliberately deferred and must 
   production path) and `_relabel_itsx_output` dedup/mixed-cov are untested.
 - **(method, pre-existing) ITSx still over-extends LSU to the contig end** on the tandem array
   (separate from the D-028 coverage filter) — a length-cap concern, not built.
+
+### Deferred from the D-035/D-036 pre-commit review (2026-06-24, D-037)
+- **(collision) Gene-of-interest outputs share `per_strain/<strain>/<name>/` with catalogue loci.**
+  A GOI named the same as a catalogue locus (e.g. "RPB2") overwrites that locus's output dir at
+  extraction time. `resolve_guide_path` now prefers the GOI guide, but the real fix is to namespace
+  GOI outputs (e.g. `GOI_<name>/`). Not built.
+- **(robustness) `scan_flagged_cds` validates only `recs[0]`** of a CDS FASTA — a frameshifted
+  second record (from `--bestn>1`) is missed. Normal output is single-record; revisit if multi-model
+  CDS files are ever written.
+- **(strictness) `extract_locus_exonerate` silently coerces an unknown `refine`/`escalate_ceiling`**
+  to a default rather than raising — fine for the UI (valid values only), but a programmatic caller
+  typo passes silently. Make it raise.
+- **(coverage) The page-4 deep-refine loop body and page-12 result rendering are smoke-only.** The
+  testable pieces were extracted (`resolve_guide_path`, `analyze_alignment`, `orthology_check`); the
+  Streamlit glue (snapshot/restore, re-merge, table rendering) is exercised only by the import smoke
+  test.
+
+### Deferred from the second robustness review (2026-06-24, D-038)
+- **(durability) Deep-refine snapshot lives in `/tmp` and restore is `rmtree`+`move`.** Python
+  exceptions are caught and the original is restored, but a *hard* kill (OS/power) in the
+  rmtree→move window, or mid-rewrite, could lose the locus dir (only copy in `/tmp`, cleared on
+  reboot). Accepted for now — the whole deep-refine pass is explicitly re-runnable and the original
+  is regenerable by re-extracting. If hardened: snapshot to a sibling on the same filesystem and
+  swap with `os.replace` (atomic rename) instead of cross-fs `move`.
+- **(contrived) `_dedupe_ids` can re-collide.** A matrix containing both two `MH1.1` *and* a literal
+  `MH1.1__dup2` would synthesize a second `MH1.1__dup2`. Loop the suffix until unseen if it ever
+  matters; not worth the code today.
+- **(cosmetic) Page-12 isolate/tip caption is computed pre-dedup** (a fresh `SeqIO.parse`), so with a
+  double-imported accession the caption count can be one off from the deduped results table. The
+  dedup warning already surfaces the slip; left as-is.
+- **(low risk) Nucleotide p-distance treats RNA `U` vs DNA `T` as a mismatch.** Matrices here are
+  DNA, so no real-world impact; note it if RNA tips are ever fetched.
 
 ## Done (high-level milestones)
 

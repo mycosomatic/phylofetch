@@ -1036,3 +1036,164 @@ Format for each entry:
 - **Status:** active. Implemented 2026-06-23. `ncbi_utils.py` (`NCBIError`, `_throttle`,
   `_entrez_retry`, `set_api_key`, `NCBI_API_KEY` env pickup; six call sites wrapped, redundant sleeps
   removed). +8 retry/transport tests. **327 passing.**
+
+### D-035 (2026-06-24) — Refinement effort: cap auto-escalation at `region`, opt-in `full`, targeted deep-refine pass
+- **Decision:** (1) **Auto-escalation now caps at `--refine region`** by default — new
+  `escalate_ceiling="region"` param on `extract_locus_exonerate` (supersedes D-030's
+  escalate-to-`full`). (2) The Exonerate page gains a **Refinement effort** control — *Fast* (single
+  pass, no refine), *Balanced* (none→region, default), *Thorough* (none→region→full). (3) A
+  **targeted deep-refine pass**: a stateless `scan_flagged_cds(per_strain_dir)` re-validates every
+  extracted `LOCUS_CDS.fasta` on disk and lists the flagged (frameshift/internal-stop) ones; a
+  page button re-runs **`--refine full` on just those**, reusing the guides persisted in
+  `scratch/guides/` (and `_goi_refs/` / the nucleotide library), keeping the cleaner result and
+  re-merging the combined FASTAs. Because it reads disk (not session state), it can be run **any
+  time, including a future session** — e.g. when a downstream tree/alignment looks off.
+- **Why:** A user re-running a real project with bundled (universal, taxon-divergent) guides found
+  Exonerate "stuck": a single RPB2 strain ran >10 min. Diagnosis (live process): it was at
+  **`--refine full` on a 2.8 Mb narrowed contig**. `--refine full` re-runs *exhaustive* DP over the
+  whole target (vs. `region`, which refines only the local hit) — minutes per strain on a long,
+  multi-intron gene, and divergent guides make many strains (even clean `NS` ones, not just the aff.
+  *eureka*) come out frameshifted → almost every strain escalated to `full`. D-030's own verification
+  already showed `full` rescued **nothing** that `region` didn't (S9 resisted even `full`), so `full`
+  was paying the largest cost for ~zero benefit. The fix is cheap-by-default, expensive-on-demand:
+  cap at `region`, and offer `full` as a deliberate, re-runnable pass on only the sequences that need
+  it. The D-033 900 s `run_exonerate` timeout already prevents an infinite hang; this prevents the
+  slow path from running at all unless asked.
+- **Alternatives considered:** (a) **Lower the per-call timeout** — rejected: truncates a run rather
+  than avoiding the needless exhaustive pass. (b) **Keep escalate-to-full default** (D-030) — rejected:
+  the slowdown is severe and `full` adds no observed recovery. (c) **Skip escalation entirely** —
+  rejected: `region` is cheap and recovers the common splice-misplacement frameshift (the D-030
+  benefit). (d) **Auto-run full on flagged at the end of every extraction** — rejected: still slow and
+  unprompted; the user explicitly wanted it on-demand and repeatable later.
+- **Status:** active. Implemented 2026-06-24. `exonerate_utils.py` (`escalate_ceiling` param +
+  capped `levels`; `scan_flagged_cds`), `pages/4_Exonerate.py` (Refinement-effort selector →
+  refine/escalate/ceiling; "Deep refinement" section: flagged scan + `_resolve_guide` + `--refine
+  full` re-run + combined re-merge). Supersedes the escalate-to-`full` default of **D-030** (the
+  frame-recovery rationale and the keep-the-cleanest loop are unchanged; only the default ceiling
+  moved to `region`). +5 tests (ceiling cap/opt-in, `scan_flagged_cds`). **332 passing.**
+
+### D-036 (2026-06-24) — Orthology / paralog sanity check (align extracted loci against tips)
+- **Decision:** New component page **Orthology Check** (`12_Orthology_Check.py`, `orthology_utils.py`),
+  slotted in the workflow between Codon Tip Prep and Alignment Prep. Per locus it aligns the
+  `with_tips/` combined matrix (isolates + imported amplicon tips) with MAFFT, builds a pairwise
+  **p-distance** matrix and a **neighbour-joining tree** (Biopython — no new dependency), and flags
+  **divergence outliers**: a sequence whose *median distance to all the others* is a robust
+  (median/MAD) high-side outlier. The check is **source-blind** — every sequence is labelled
+  `isolate` vs `tip` for display, but flagged purely on divergence, so it indicts a published
+  reference amplicon exactly as readily as an Exonerate extraction. **Substrate is selectable**
+  (genomic / CDS / protein), **default genomic** (intron-inclusive — every tip included, matches the
+  genomic-vs-amplicon tree). Saves the Newick + a TSV report to `results/orthology/`.
+- **Why:** Exonerate can pick a paralog (long branch), and — equally — an imported GenBank barcode can
+  itself be a paralog or mis-annotation with no way to know what QC the original authors did (terse
+  methods, publisher length limits). The reading-frame QC (D-030/D-035) says nothing about orthology:
+  a cleanly-translating CDS from a paralog is *worse* for the tree than a frame-flagged true ortholog.
+  Orthology is the property that actually matters for the phylogeny, and the cheapest robust signal is
+  divergence structure — a true ortholog has a close relative in the set; a paralog stands apart.
+  **Median-distance-to-others** (not nearest-neighbour) is the primary metric because it catches a
+  small paralog *cluster* (e.g. several isolates that all grabbed the same paralog, agreeing with each
+  other but far from the references) which a nearest-neighbour rule would miss; `nn_dist` is reported
+  alongside to distinguish a lone paralog from a shared-artifact cluster.
+- **Alternatives considered:** (a) **Tree-branch-length outliers only** — rejected as the sole metric:
+  a paralog *pair* has short terminal branches (they're close to each other); median-distance catches
+  it, and the NJ tree is still shown for the eye. (b) **An automatic hard reject** — rejected: the
+  flag is a guide; the user (expert) makes the call, so the page surfaces the table + tree and never
+  drops anything. (c) **Protein-only** — rejected as default: most paralog-sensitive but excludes the
+  intron-rich tips that can't be codon-framed; offered as a selectable substrate instead. (d) **Build
+  it into Alignment Prep** — rejected: it's a distinct QC gate with its own provenance; a component
+  page fits the D-012 architecture and gives it a clear workflow slot.
+- **Status:** active. Implemented 2026-06-24. `orthology_utils.py` (`pairwise_pdistance`,
+  `distance_matrix`, `analyze_alignment` pure core, `orthology_check` MAFFT wrapper,
+  `robust_high_outliers`), `pages/12_Orthology_Check.py`, registered in `app.py` nav (Tree prep group,
+  between Codon Tip Prep and Alignment Prep). Closes the long-planned orthology-vs-tips item
+  (PLANNING.md). MAFFT routes through RunManager for provenance. +11 engine tests + app-smoke page.
+  **344 passing.** NB: not yet wired as a manifest `workflow.steps` entry / Workflow-page checklist
+  item — deferred (PLANNING.md), so it doesn't add an orphan step before it's in a named strategy.
+
+### D-037 (2026-06-24) — Pre-commit review fixes for D-035 / D-036 (four-agent review)
+- **Decision:** Before committing D-035 + D-036 a four-reviewer pass surfaced real defects; fixed the
+  must/should set:
+  - **Orthology p-distance is overlap- and alphabet-aware (D-036 H1/H2).** Pairs sharing
+    `< MIN_OVERLAP` (30) comparable columns are excluded from the median-distance flag metric (NaN,
+    not 1.0) — a partial amplicon tip overlapping only a sub-region of a full-gene extraction no
+    longer fabricates a paralog signal; such sequences are reported "insufficient overlap", not
+    flagged. The non-comparable set is alphabet-aware: on the **protein** substrate `N` is
+    asparagine (a residue, kept) and `X` is unknown (dropped); on nucleotide `N/n` stays "any base".
+    The page passes `protein=(substrate=="protein")`.
+  - **Duplicate ids handled, not crashed (D-036 C1).** Verified on the installed **Biopython 1.87**
+    that `DistanceMatrix` *raises* on duplicate names (the reviewer's "silent" claim was wrong for
+    this build) — an uncaught crash on a double-imported accession. `load_combined_records` now
+    de-duplicates ids (`__dupN`) and surfaces a warning, so the exact import slip this QC exists to
+    catch is shown, not fatal. NJ negative branch lengths clamped at display (M2).
+  - **`refine_used` is real now (D-035 H1).** `write_exonerate_log` writes a `refine_used` line, so
+    `scan_flagged_cds` can actually report it; the masking test that *fabricated* a log token was
+    replaced with one using the real format **plus** a producer-side test that
+    `write_exonerate_log` emits it.
+  - **Deep-refine is overwrite-safe (D-035 H2).** The rescue snapshots the locus dir, runs
+    `--refine full`, and **keeps the new CDS only if strictly cleaner** `(frame_ok, -stops)`;
+    otherwise it restores the original untouched. A loud warning states it re-extracts with current
+    settings, and a manifest note records that a deep-refine happened.
+  - **Guide resolution + locus discovery (review mediums).** `resolve_guide_path` (extracted,
+    tested) gives a gene-of-interest's own ref precedence over a same-named catalogue guide and has
+    no dir-creating side effect; the Orthology page recovers the locus by stripping the product
+    suffix (not `split("_")[0]`, which mangled underscore-bearing GOI names) and reuses the
+    canonical `is_isolate` for its source counts.
+- **Why:** All six are silent-wrong-result or crash paths on this active-research data — most acute,
+  the overlap fix (the genomic-vs-*amplicon* comparison is the primary use case, and amplicons are
+  partial) and the overwrite-safety fix (a drifted-settings rescue could replace a better CDS).
+- **Status:** active. Implemented 2026-06-24. `orthology_utils.py` (overlap/alphabet-aware distance,
+  dedup, branch clamp, `protein`/`min_overlap` params), `pages/12_Orthology_Check.py` (suffix-strip
+  locus discovery, `is_isolate` reuse, protein flag, no-tips + dup + low-overlap notices, majority
+  caveat), `exonerate_utils.py` (`write_exonerate_log` `refine_used`, `resolve_guide_path`),
+  `pages/4_Exonerate.py` (keep-if-cleaner snapshot/restore, current-settings warning, GOI-aware
+  guide, manifest note). +15 tests (median-vs-NN pin, protein-N, zero-overlap, mad==0, dedup,
+  stub-MAFFT id-preservation, refine_used round-trip, clean-CDS-ending-in-stop, `resolve_guide_path`).
+  **359 passing.** Deferred (PLANNING.md): GOI output-dir namespacing, multi-record CDS scan,
+  invalid-`refine` should raise.
+
+### D-038 (2026-06-24) — Robustness hardening from a second (post-D-037) agent review
+- **Decision:** A second three-reviewer pass over the D-037 fixes (asked to *break* them, not confirm
+  them) plus my own empirical verification — the reviewers' sandboxes blocked code execution, so I
+  re-ran every load-bearing claim myself — confirmed three real residual defects and two weak tests.
+  Fixed:
+  - **Orthology core can't crash on duplicate ids (confirmed `ValueError` on Biopython 1.87).** The
+    D-037 dedup guarded only `load_combined_records`; the public `analyze_alignment` core still
+    raised when handed dup ids directly. It now defensively de-duplicates its own input (silent
+    rename — the page path already deduped+warned, so it's a no-op there). A double-import is the
+    exact slip this QC targets and must never be a crash.
+  - **The NJ tree now uses the SAME overlap gate as the flag.** `distance_matrix` excluded NaN-only
+    pairs but not low-overlap ones, and computed its fill from *all* finite distances — so a
+    one-column noise distance (or a 5-column `d=0`) could pull a partial sequence misleadingly close
+    in the very tree the UI tells the user to "trust over the flag". Pairs sharing `< min_overlap`
+    comparable columns are now treated as missing (filled with the max *trustworthy* distance). This
+    directly serves the genomic-vs-*amplicon* use case, where some tips are partial.
+  - **"No outliers" is honest below the assessable minimum.** The robust median/MAD test needs ≥4
+    assessable values; at n<4 it (correctly) flags nothing, but the page said "No divergence
+    outliers" — misleading. `analyze_alignment` now returns `n_assessed`, and the page shows an
+    explicit "needs ≥4 to assess" notice instead of a false all-clear.
+  - **Persisted Newick never carries a negative branch.** The D-037 clamp covered only the table
+    column; the `.nwk`/ascii written from the raw tree could still carry NJ's tiny negative branches
+    (`-0.00000`), which strict tree viewers reject. The tree object itself is now clamped before
+    write/draw.
+  - **Exonerate QC re-validation uses the genetic code the locus was extracted with, not the live
+    widget (scientific-soundness).** `scan_flagged_cds` re-translated each CDS under whatever
+    `geneticcode` the page currently showed; a code change alone (e.g. mito code 4 vs standard 1,
+    where `TGA` is Trp vs a stop) could silently flip a clean CDS to "flagged" or back.
+    `write_exonerate_log` now records `geneticcode`; the scan parses and re-validates under it
+    (arg is fallback only) and returns it, and the deep-refine rescue re-runs under that same code.
+- **Why:** Each is a silent-wrong-result path on active-research data; the genetic-code and
+  overlap-gate items are the two that could actually mislead a phylogenetic call. The two weak tests
+  mattered because they gave false confidence — `test_robust_outliers_mad_positive_path` actually
+  exercised the *MAD==0 fallback* (its data has MAD=0), and the newick/tree-gate fixes had **no**
+  test that failed when the fix was reverted (proven by a mutation pass).
+- **Status:** active. Implemented 2026-06-24. `orthology_utils.py` (core dedup safety net,
+  `distance_matrix` overlap gate + `min_overlap` param, tree-object branch clamp, `n_assessed`),
+  `pages/12_Orthology_Check.py` (`n_assessed` honest notice), `exonerate_utils.py`
+  (`[QC] geneticcode` in the log, `scan_flagged_cds` re-validates under the logged code + returns it),
+  `pages/4_Exonerate.py` (deep-refine rescue uses the recorded code). **+8 tests, all mutation-verified
+  to fail when their fix is broken** (dup-id-to-core, n<4/`n_assessed`, no-negative-Newick on a
+  proven-negative input, `distance_matrix` overlap gate, genetic-code-over-arg + fallback + producer);
+  the mislabeled MAD test now uses genuine MAD>0 data and the cluster test pins `flagged == {P,Q}`
+  exactly (majority-inversion regression). **352 passing, 1 skipped** (app-smoke needs Streamlit,
+  absent in this env). Deferred (PLANNING.md): deep-refine snapshot durability on a *hard kill*
+  (re-runnable op, accepted), dedup `__dupN` re-collision (contrived), page's pre-run isolate/tip
+  caption is pre-dedup (cosmetic), RNA `U`/`T` (matrices are DNA).

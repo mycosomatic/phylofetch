@@ -3,6 +3,55 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-24
+
+- **Second robustness review of the D-037 fixes (D-038).** A follow-up "try to break it" review +
+  my own empirical re-verification (the reviewer sandboxes couldn't run code) confirmed and fixed:
+  the orthology **core** no longer crashes on duplicate ids (the D-037 dedup only guarded the page
+  path); the **NJ tree now uses the same low-overlap gate as the flag**, so a one-column noise
+  distance can't pull a partial amplicon misleadingly close in the tree the UI says to trust;
+  **"no outliers" is honest below 4 assessable sequences** (new `n_assessed` + a page notice, since
+  the robust test can't flag anything there); the **persisted Newick is clamped** so it never
+  carries NJ's tiny negative branches; and — most important scientifically — **Exonerate QC
+  re-validation now uses the genetic code the locus was extracted with** (recorded in the log), not
+  the live page widget, so a code change alone can't flip a clean CDS to flagged. **+8 tests, every
+  one mutation-verified** to fail when its fix is reverted; two D-037 tests that gave false
+  confidence (a "MAD>0" test that actually ran the MAD==0 branch; vacuous newick/tree-gate tests)
+  were corrected. **352 passing, 1 skipped** (app-smoke needs Streamlit, absent in this env).
+- **Pre-commit review fixes for D-035 / D-036 (D-037).** A four-agent review before committing
+  caught real defects; fixed: orthology p-distance now **excludes low-overlap pairs** (a partial
+  amplicon tip no longer fabricates a paralog) and is **alphabet-aware** (protein `N`=asparagine);
+  **duplicate ids** are de-duplicated with a warning instead of crashing the Biopython matrix (1.87
+  raises); the deep-refine pass is now **overwrite-safe** (snapshot + keep-only-if-strictly-cleaner,
+  with a "uses current settings" warning); `write_exonerate_log` actually writes `refine_used` (and
+  the test that *fabricated* it was replaced with a real round-trip); guide resolution gives a
+  gene-of-interest precedence over a same-named catalogue guide (no dir side effect); and the
+  Orthology page recovers loci by suffix-strip (not `split("_")[0]`, which hid underscore-named GOIs).
+  +15 tests incl. a median-vs-nearest-neighbour pin, protein-`N`, zero-overlap, and stub-MAFFT
+  id-preservation. **359 passing.**
+- **Orthology / paralog sanity check (D-036).** New **Orthology Check** page (between Codon Tip Prep
+  and Alignment Prep): per locus it aligns your isolates + imported amplicon tips (MAFFT), builds a
+  p-distance neighbour-joining tree, and flags **divergence outliers** — possible paralogs/artifacts.
+  It's **source-blind**: a published reference amplicon is judged exactly like an Exonerate
+  extraction (you can't know what QC the original authors did), with every row labelled isolate/tip.
+  The primary signal is median distance to all others (catches both a lone paralog and a paralog
+  *cluster*); the NJ tree is shown for the eye. Substrate selectable (genomic default / CDS /
+  protein); saves Newick + TSV to `results/orthology/`. Closes the long-planned orthology-vs-tips
+  item. +11 engine tests. **344 passing.**
+- **Exonerate refinement effort + on-demand deep-refine (D-035).** A real run with bundled
+  (taxon-divergent) guides appeared stuck — a single RPB2 strain ran >10 min because D-030 had
+  escalated to **`--refine full`**, which re-runs exhaustive DP over the whole 2.8 Mb narrowed contig
+  (minutes/strain), and divergent guides made nearly every strain escalate. Since `full` was verified
+  (D-030) to rescue nothing `region` didn't:
+  - **Auto-escalation now caps at `--refine region`** by default (`escalate_ceiling`), so extraction
+    stays fast; `full` is opt-in.
+  - The page gains a **Refinement effort** control — *Fast* / *Balanced* (default) / *Thorough*.
+  - New **Deep refinement** section: a stateless scan re-validates every extracted `LOCUS_CDS.fasta`,
+    lists the flagged (frameshift/internal-stop) ones, and runs **`--refine full` on just those** —
+    reusing the guides saved in `scratch/guides/`, keeping the cleaner result, and re-merging the
+    combined FASTAs. It reads disk, so it can be run **any time, including a later session** (e.g. if a
+    downstream tree looks off). +5 tests. **332 passing.**
+
 ## 2026-06-23
 
 - **Architecture audit fixes — Tier 1 (D-032 / D-033 / D-034).** A multi-reviewer audit after the
