@@ -181,7 +181,9 @@ with tab_iqtree:
         with open(history_tsv, newline="") as f:
             reader = csv.DictReader(f, delimiter="\t")
             for row in reader:
-                if row.get("module") == "iqtree2":
+                # Logged with module="iqtree" (generic; the binary may be iqtree3) — the
+                # filter must match that, not the legacy "iqtree2" string (D-032).
+                if row.get("module") == "iqtree":
                     rows.append(row)
         if rows:
             import pandas as pd
