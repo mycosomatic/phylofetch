@@ -180,6 +180,7 @@ nav = st.navigation(
         ],
         "Tree prep": [
             st.Page(f"{PAGES}/8_Codon_Tip_Prep.py", title="Codon Tip Prep", icon="🔡"),
+            st.Page(f"{PAGES}/12_Orthology_Check.py", title="Orthology Check", icon="🔍"),
             st.Page(f"{PAGES}/9_Alignment_Prep.py", title="Alignment Prep", icon="🧷"),
         ],
         "Phylogenomics & tree": [

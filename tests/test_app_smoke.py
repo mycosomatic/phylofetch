@@ -22,7 +22,7 @@ PAGES = [
     "pages/3_ITSx_rDNA.py", "pages/4_Exonerate.py", "pages/5_Primers.py",
     "pages/6_Workflow.py", "pages/7_Reference_Taxa.py", "pages/8_Codon_Tip_Prep.py",
     "pages/9_Alignment_Prep.py", "pages/10_BUSCO_Phylogenomics.py",
-    "pages/11_Tree_Visualization.py",
+    "pages/11_Tree_Visualization.py", "pages/12_Orthology_Check.py",
 ]
 
 
