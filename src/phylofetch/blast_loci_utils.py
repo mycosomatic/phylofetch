@@ -425,6 +425,53 @@ def write_gff3(result: dict, output_dir: str) -> str:
     return gff_path
 
 
+def write_region_gff3(result: dict, output_dir: str) -> str:
+    """
+    GFF3 in the coordinate frame of ``LOCUS_genomic.fasta`` — the extracted, strand-oriented gene —
+    so it annotates *that* sequence directly in Geneious / IGV (an exon/intron track on the gene you
+    actually load). ``LOCUS.gff3`` is **contig**-relative (needs the whole assembly loaded); this
+    ``LOCUS_genomic.gff3`` is **region**-relative, seqid ``STRAIN_LOCUS_genomic``, coords 1-based
+    from the extracted gene's 5′ end, everything on ``+`` (the FASTA is already coding-oriented).
+    For a minus-strand gene the contig coordinates are flipped to match the reverse-complement that
+    was written. (D-029)
+    """
+    sid, locus = result["strain_id"], result["locus_name"]
+    seqid = f"{sid}_{locus}_genomic"
+    a0, a1, strand = result["amplicon_start"], result["amplicon_end"], result["strand"]
+    region_len = a1 - a0 + 1
+
+    def to_region(g_start: int, g_end: int) -> tuple[int, int]:
+        if strand == "-":                       # FASTA is revcomp → flip about the region
+            return a1 - g_end + 1, a1 - g_start + 1
+        return g_start - a0 + 1, g_end - a0 + 1
+
+    # exons in transcription order (= ascending region coord, since the FASTA is coding-oriented)
+    rex = sorted((to_region(e["g_start"], e["g_end"]) + (e,) for e in result["exons"]),
+                 key=lambda t: t[0])
+    gene_id, mrna_id = f"{sid}_{locus}", f"{sid}_{locus}.t1"
+    lines = ["##gff-version 3",
+             f"##sequence-region {seqid} 1 {region_len}",
+             f"{seqid}\tphylofetch\tgene\t1\t{region_len}\t.\t+\t.\tID={gene_id};Name={locus}",
+             f"{seqid}\tphylofetch\tmRNA\t1\t{region_len}\t.\t+\t.\tID={mrna_id};Parent={gene_id}"]
+    cumulative = 0
+    for i, (rs, re_, ex) in enumerate(rex, start=1):
+        phase = (3 - (cumulative % 3)) % 3
+        cumulative += ex["length"]
+        lines.append(f"{seqid}\tphylofetch\texon\t{rs}\t{re_}\t{ex['pident']:.1f}\t+\t.\t"
+                     f"ID={mrna_id}.exon{i};Parent={mrna_id}")
+        lines.append(f"{seqid}\tphylofetch\tCDS\t{rs}\t{re_}\t{ex['pident']:.1f}\t+\t{phase}\t"
+                     f"ID={mrna_id}.cds;Parent={mrna_id}")
+    for i in range(len(rex) - 1):               # introns = gaps between consecutive exons
+        prev_end, next_start = rex[i][1], rex[i + 1][0]
+        if next_start > prev_end + 1:
+            lines.append(f"{seqid}\tphylofetch\tintron\t{prev_end + 1}\t{next_start - 1}\t.\t+\t.\t"
+                         f"ID={mrna_id}.intron{i + 1};Parent={mrna_id}")
+
+    gff_path = os.path.join(output_dir, f"{locus}_genomic.gff3")
+    Path(gff_path).write_text("\n".join(lines) + "\n")
+    return gff_path
+
+
 def write_codon_partition(cds_length: int, output_dir: str, locus_name: str) -> str:
     path = os.path.join(output_dir, f"{locus_name}_partition.nex")
     content = f"""#nexus
@@ -603,6 +650,7 @@ def extract_locus(
 
     write_fastas(result, output_dir, evalue=evalue, min_pident=min_pident, extracted_at=ts)
     write_gff3(result, output_dir)
+    write_region_gff3(result, output_dir)
     write_codon_partition(result["cds_length"], output_dir, locus_name)
     write_extraction_log(result, output_dir,
                          blast_cmd=blast_cmd, evalue=evalue,

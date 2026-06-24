@@ -5,6 +5,14 @@
 
 ## 2026-06-23
 
+- **Geneious-importable GFF (D-029).** Importing `exonerate.gff` into Geneious failed (*"Expected a
+  number. Found: …'--model'"*) — that file is Exonerate's raw stdout, which starts with
+  `Command line: [exonerate --model …]` and isn't valid GFF. It's now saved as **`exonerate_raw.txt`**
+  (a tool log, not for import). And because the clean `LOCUS.gff3` is *contig*-relative (won't land on
+  the extracted gene), extraction now also writes a **region-relative `LOCUS_genomic.gff3`** that
+  matches `LOCUS_genomic.fasta` — load that pair in Geneious/IGV for an exon/intron/CDS track on the
+  extracted gene. Verified the region GFF exon ranges equal the soft-masked uppercase runs on both
+  strands. +3 tests.
 - **rDNA: prefer the high-coverage array, drop off-array/RIP'd copies (D-028).** ITSx made spurious
   detections on chromosomal contigs — a 90 kb chunk of the 6.9 Mb NODE_1 (45×) gave a **60 kb "SSU"**
   while the true SSU sat on the rDNA repeat contig (1193×). The wrapper now keeps only the

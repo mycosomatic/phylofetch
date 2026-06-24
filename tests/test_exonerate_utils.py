@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from Bio.Seq import Seq
 
+from phylofetch.blast_loci_utils import write_region_gff3
 from phylofetch.exonerate_utils import (
     MODEL_FOR_QUERYTYPE,
     build_result_from_model,
@@ -234,6 +235,49 @@ class TestSoftMaskGenomic:
 
     def test_empty_span_returns_empty(self):
         assert soft_mask_genomic("ACGT", 0, 0, [], False) == ""
+
+
+class TestRegionGff3:
+    """D-029: the region-relative GFF3 annotates the extracted LOCUS_genomic.fasta directly —
+    its exon ranges must equal the UPPERCASE (exon) runs of the soft-masked genomic, on both
+    strands, and the seqid must match the genomic FASTA record id."""
+
+    def _exon_ranges(self, gff_text):
+        out = []
+        for line in gff_text.splitlines():
+            f = line.split("\t")
+            if len(f) > 4 and f[2] == "exon":
+                out.append((int(f[3]), int(f[4])))
+        return out
+
+    @pytest.mark.parametrize("tag,contig_fix", [("plus", "contig_plus"),
+                                                ("minus", "contig_minus")])
+    def test_exon_ranges_match_uppercase_runs(self, tag, contig_fix, request, tmp_path):
+        import re
+        contig = request.getfixturevalue(contig_fix)
+        res = build_result_from_model(
+            parse_exonerate_gff(_fix(f"exo_protein2genome_{tag}.gff"))[0], contig, "ST1", "TEF1")
+        path = write_region_gff3(res, str(tmp_path))
+        text = Path(path).read_text()
+        amp = res["amplicon_seq"]
+        upper_runs = [(m.start() + 1, m.end()) for m in re.finditer(r"[ACGT]+", amp)]
+        assert self._exon_ranges(text) == upper_runs            # exon track lines up with the FASTA
+        assert f"##sequence-region ST1_TEF1_genomic 1 {len(amp)}" in text
+        assert Path(path).name == "TEF1_genomic.gff3"
+        # everything is on '+' in the region frame (FASTA is coding-oriented)
+        feat_strands = {l.split("\t")[6] for l in text.splitlines() if len(l.split("\t")) > 6}
+        assert feat_strands == {"+"}
+
+    def test_introns_are_lowercase_in_fasta(self, contig_minus, tmp_path):
+        import re
+        res = build_result_from_model(
+            parse_exonerate_gff(_fix("exo_protein2genome_minus.gff"))[0], contig_minus, "ST1", "TEF1")
+        text = Path(write_region_gff3(res, str(tmp_path))).read_text()
+        amp = res["amplicon_seq"]
+        for line in text.splitlines():
+            f = line.split("\t")
+            if len(f) > 4 and f[2] == "intron":
+                assert amp[int(f[3]) - 1:int(f[4])].islower()
 
 
 # ── End-to-end (requires the exonerate binary) ─────────────────────────────

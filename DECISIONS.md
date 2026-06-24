@@ -853,3 +853,29 @@ Format for each entry:
   `run_itsx` + log notes; `pages/3_ITSx_rDNA.py` toggle. +5 tests. **Known remaining:** LSU on the
   real array is still extended to the contig end by ITSx (tandem repeat) — a separate length-cap
   concern, not addressed here.
+
+### D-029 (2026-06-23) — Geneious-importable GFF: rename raw Exonerate output + region-relative GFF3
+- **Decision:** (1) Save Exonerate's verbatim stdout as **`exonerate_raw.txt`**, not `exonerate.gff`
+  — it begins with `Command line: [...]` / `Hostname:` lines and is **not valid GFF**, so the `.gff`
+  name invited importing it. (2) Write a **region-relative `LOCUS_genomic.gff3`** whose coordinates
+  match the extracted, strand-oriented `LOCUS_genomic.fasta` (seqid `STRAIN_LOCUS_genomic`, 1-based
+  from the gene's 5′ end, all features on `+`), so it annotates the extracted gene **directly** as an
+  exon/intron/CDS track. The existing contig-relative `LOCUS.gff3` is kept for whole-assembly
+  context. New `write_region_gff3` in `blast_loci_utils`, called on both the Exonerate and BLAST
+  write paths.
+- **Why:** The user's Geneious import failed: *"Error parsing feature range '--model',
+  'protein2genome'. Expected: A number. Found: A free man."* — Geneious read the raw file's
+  `Command line: [exonerate --model protein2genome …]` header as a feature row. Separately, the clean
+  `LOCUS.gff3` is **contig**-relative (coords like 175960–177669 on NODE_44), so it does not line up
+  with the extracted gene FASTA the user actually loads — the region-relative GFF3 does. Verified the
+  region GFF3 exon ranges exactly equal the UPPERCASE (exon) runs of the soft-masked genomic on both
+  plus and minus strands (the minus-strand flip is handled), with introns lining up lowercase.
+- **Alternatives considered:** (a) **Strip the raw output to a valid GFF and keep the `.gff` name** —
+  rejected: it is GFF2 in Exonerate's own dialect and would duplicate `LOCUS.gff3`; a `.txt` name
+  honestly signals "tool log, not for import". (b) **Only document "import LOCUS.gff3"** — rejected:
+  contig-relative coords don't match the extracted gene, so the track wouldn't land; the
+  region-relative file is the artifact that actually works. (c) **Replace the contig-relative GFF3** —
+  rejected: kept both (contig for genome-context viewing, region for the extracted-gene track).
+- **Status:** active. Implemented 2026-06-23. `exonerate_utils.run_exonerate` writes
+  `exonerate_raw.txt`; `blast_loci_utils.write_region_gff3` + calls on both write paths; page 8
+  guidance updated. +3 tests (region exon ranges == uppercase runs, both strands; introns lowercase).

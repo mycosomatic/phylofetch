@@ -63,6 +63,7 @@ from .blast_loci_utils import (
     select_best_locus_group,
     write_codon_partition,
     write_gff3,
+    write_region_gff3,
     _build_description,
 )
 
@@ -164,9 +165,14 @@ def run_exonerate(
         raw = proc.stdout or ""
         rc = proc.returncode
 
-    gff_path = os.path.join(output_dir, "exonerate.gff")
-    Path(gff_path).write_text(raw, encoding="utf-8")
-    return rc, raw, gff_path
+    # Save Exonerate's verbatim stdout for provenance/debugging — but as `.txt`, NOT `.gff`:
+    # the raw output begins with `Command line: [...]` / `Hostname:` lines and is NOT valid GFF,
+    # so a `.gff` name invited importing it into Geneious, which then choked on `--model` where it
+    # expected a coordinate. The clean, importable annotation is the per-locus `LOCUS.gff3`
+    # (written by `write_gff3`); this file is only the raw tool log. (D-029)
+    raw_path = os.path.join(output_dir, "exonerate_raw.txt")
+    Path(raw_path).write_text(raw, encoding="utf-8")
+    return rc, raw, raw_path
 
 
 # ── Output parsing ───────────────────────────────────────────────────────────
@@ -708,6 +714,7 @@ def extract_locus_exonerate(
     )
     write_exonerate_fastas(result, output_dir, extracted_at=ts)
     write_gff3(result, output_dir)
+    write_region_gff3(result, output_dir)
     write_codon_partition(result["cds_length"], output_dir, locus_name)
     write_exonerate_log(result, output_dir, exonerate_cmd=exo_cmd,
                         reference_fasta=reference_fasta, narrowed=narrowed,

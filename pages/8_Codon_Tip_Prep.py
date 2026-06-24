@@ -206,7 +206,10 @@ if summaries:
         "exon UPPER / intron lower case marks the boundaries as you edit, and move with the gaps. "
         "This matrix also holds any **nucleotide-only** tips (intron-rich barcodes like TEF1); "
         "MAFFT `--adjustdirection` is a good belt-and-braces check on their orientation;\n"
-        "- the per-sequence GFF3 from extraction imports into Geneious as an exon/intron track.\n\n"
+        "- to get an exon/intron track in Geneious/IGV, load `LOCUS_genomic.fasta` and import the "
+        "matching `LOCUS_genomic.gff3` (region-relative, lines up with that file) — **not** "
+        "`exonerate_raw.txt` (that's the raw tool log, not valid GFF). `LOCUS.gff3` is the "
+        "contig-relative version for whole-assembly context.\n\n"
         "Companions (optional, never required): **AliView** / **SeaView** (fast, frame-aware "
         "editors) or **Geneious**. Build a tree from the CDS and from the full gene and compare "
         "topologies — intron and coding signal can differ.")
