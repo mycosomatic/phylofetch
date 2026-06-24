@@ -879,3 +879,36 @@ Format for each entry:
 - **Status:** active. Implemented 2026-06-23. `exonerate_utils.run_exonerate` writes
   `exonerate_raw.txt`; `blast_loci_utils.write_region_gff3` + calls on both write paths; page 8
   guidance updated. +3 tests (region exon ranges == uppercase runs, both strands; introns lowercase).
+
+### D-030 (2026-06-23) — Auto-escalating boundary refinement + loud write-and-flag (no silent drops)
+- **Decision:** (1) When Exonerate `protein2genome` returns a CDS with internal stops / a broken
+  frame, **auto-escalate `--refine`** (`none → region → full`) and keep the cleanest result; the
+  first pass uses the requested level and the common clean case stays a single fast pass. New
+  `escalate_refine` param (default True) on `extract_locus_exonerate`; the result records
+  `refine_used` / `refine_escalated` and the status appends `[boundary-refined: refine=…]`. The page
+  "Boundary refinement" control is reframed as the **starting** level. (2) **Loud, persistent QC
+  summary** on the Exonerate page: a `PASS / REVIEW / DROPPED / FAILED` tally plus an
+  expanded-by-default table of every sequence "needing attention", persisted to session state so
+  flagged/dropped strains never silently vanish from the combined files; a Strict-QC drop is called
+  out explicitly.
+- **Why:** Diagnosed (D-029 investigation) that the RPB2 frameshift in the *A.* aff. *eureka* strains
+  is **not** in the genome — the assembled DNA is ~99.9 % identical to clean strains (3 substitutions,
+  **zero indels** over 3.9 kb) — but Exonerate misplaces a splice boundary on those sequences,
+  frameshifting the reconstructed CDS. `--refine region` recovers the frame for 3 of the 4 affected
+  strains (verified: S11-3-B4 42 stops → **0**); S9-1B-A2 resists even `full` (a 1-bp difference at
+  the boundary). Escalation auto-fixes the recoverable cases without slowing clean ones; the
+  remainder must stay **written-and-flagged**, not dropped — and the user must be able to *see* them,
+  hence the loud summary. (The 4 strains had vanished earlier because **Strict QC** was on, which
+  returns None.)
+- **Alternatives considered:** (a) **Default `--refine full` for every extraction** — rejected: much
+  slower for the common clean case; escalate-on-need gets the benefit only when required. (b) **A
+  closer guide** — rejected: tested, the 99 %-identical Alternaria guide frameshifts too (it's the
+  splice call, not guide distance). (c) **Auto-correct the frame (trim/insert a base)** — rejected:
+  silently editing sequence violates transparency; flag for the human instead. (d) **Drop frameshift
+  CDS by default** — rejected (D-007/D-008 write-and-flag); only Strict QC drops, and now loudly.
+- **Status:** active. Implemented 2026-06-23. `exonerate_utils.extract_locus_exonerate`:
+  `escalate_refine`, escalation loop keeping the frame-OK-then-fewest-stops result, `refine_used` /
+  `refine_escalated`, status note; `pages/4_Exonerate.py`: persistent QC summary
+  (PASS/REVIEW/DROPPED/FAILED + attention table + Strict-QC warning), per-locus `refined:` note,
+  refinement control reframed. +4 tests → **298 passing**. Verified live: S11-3-B4 self-heals via
+  region, S9 stays flagged (not dropped), NS26 single clean pass.

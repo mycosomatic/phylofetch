@@ -280,6 +280,65 @@ class TestRegionGff3:
                 assert amp[int(f[3]) - 1:int(f[4])].islower()
 
 
+class TestRefineEscalation:
+    """D-030: escalate --refine when the CDS is frameshifted; keep the cleanest, never drop."""
+
+    def _setup(self, tmp_path, monkeypatch, clean_at):
+        """Stub the Exonerate run/build chain so refine level `clean_at` (and higher) yields a
+        clean CDS and lower levels frameshift. Returns (calls, ref, asm)."""
+        import phylofetch.exonerate_utils as eu
+        ref = tmp_path / "ref.fasta"; ref.write_text(">r\nMKLVAAAA\n")     # protein → protein2genome
+        asm = tmp_path / "asm.fasta"; asm.write_text(">c\nACGTACGT\n")
+        calls = []
+        monkeypatch.setattr(eu.shutil, "which", lambda b: "/usr/bin/" + b)
+        monkeypatch.setattr(eu, "run_exonerate",
+                            lambda *a, refine, **k: (calls.append(refine), (0, refine, "p"))[1])
+        monkeypatch.setattr(eu, "parse_exonerate_gff", lambda raw: [{"raw": raw, "contig": "c"}])
+        monkeypatch.setattr(eu, "select_best_model", lambda ms, **k: (ms[0], []))
+        monkeypatch.setattr(eu, "_load_contig", lambda *a: "A" * 60)
+        monkeypatch.setattr(eu, "_probe_exonerate_version", lambda b: "x")
+        ORDER = ["none", "region", "full"]
+
+        def fake_build(model, *a, **k):
+            lvl = model["raw"]
+            clean = clean_at in ORDER and ORDER.index(lvl) >= ORDER.index(clean_at)
+            return {"strain_id": "S", "locus_name": "RPB2", "cds_length": 300,
+                    "n_internal_stops": 0 if clean else 9, "len_mod3": 0 if clean else 1}
+        monkeypatch.setattr(eu, "build_result_from_model", fake_build)
+        for w in ("write_exonerate_fastas", "write_gff3", "write_region_gff3",
+                  "write_codon_partition", "write_exonerate_log"):
+            monkeypatch.setattr(eu, w, lambda *a, **k: "")
+        return calls, str(ref), str(asm), eu
+
+    def test_escalates_until_clean(self, tmp_path, monkeypatch):
+        calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="region")
+        res, status = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
+                                                 narrow=False, refine="none")
+        assert res["n_internal_stops"] == 0 and res["len_mod3"] == 0      # recovered clean CDS
+        assert calls == ["none", "region"]                               # stopped at first clean
+        assert "boundary-refined: refine=region" in status
+
+    def test_clean_first_pass_no_escalation(self, tmp_path, monkeypatch):
+        calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="none")
+        res, status = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
+                                                 narrow=False, refine="none")
+        assert calls == ["none"] and "boundary-refined" not in status     # single fast pass
+
+    def test_unfixable_keeps_best_and_flags_not_dropped(self, tmp_path, monkeypatch):
+        calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="never")
+        res, status = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
+                                                 narrow=False, refine="none")
+        assert res is not None                                            # written, not dropped
+        assert res["n_internal_stops"] == 9 and "QC: review" in status
+        assert calls == ["none", "region", "full"]                        # tried everything
+
+    def test_disabled_does_not_escalate(self, tmp_path, monkeypatch):
+        calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="region")
+        res, status = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
+                                                 narrow=False, refine="none", escalate_refine=False)
+        assert calls == ["none"] and res["n_internal_stops"] == 9         # stayed frameshifted
+
+
 # ── End-to-end (requires the exonerate binary) ─────────────────────────────
 
 @pytest.mark.skipif(not HAVE_EXONERATE, reason="exonerate not installed")

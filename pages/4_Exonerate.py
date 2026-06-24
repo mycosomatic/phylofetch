@@ -235,7 +235,11 @@ with sc:
     ex_bestn = st.number_input("Report top N models", value=1, min_value=1, max_value=20,
                                help=">1 surfaces paralogs / tandem duplicates.")
     ex_geneticcode = st.number_input("Genetic code (NCBI)", value=1, min_value=1, max_value=33)
-    ex_refine = st.selectbox("Boundary refinement", ["none", "region", "full"])
+    ex_refine = st.selectbox(
+        "Boundary refinement (start)", ["none", "region", "full"],
+        help="Exonerate splice-boundary optimization. This is the **starting** level — if a CDS "
+             "comes out frameshifted/with internal stops it auto-escalates region → full and keeps "
+             "the cleanest (D-030), so 'none' is a fine fast default.")
     ex_narrow = st.checkbox("BLAST-narrow to best contig (faster)", value=True)
     ex_strict_qc = st.checkbox("Strict QC (reject frameshift / internal stop)", value=False)
 
@@ -290,8 +294,9 @@ def _report(locus, result, status, goi=False):
         model = result.get("blast_type", "").replace("exonerate:", "").split(":")[0]
         paralog = (f" · {result['n_other_models']} paralog cand(s)"
                    if result.get("n_other_models") else "")
+        refined = (f" · 🔧 refined:{result['refine_used']}" if result.get("refine_escalated") else "")
         st.write(f"✅ {label} (Exonerate {model or 'protein2genome'}): {result['n_exons']} exon(s), "
-                 f"{result['cds_length']} bp CDS, {n_introns} intron(s){splice_note} · {qc} · "
+                 f"{result['cds_length']} bp CDS, {n_introns} intron(s){splice_note} · {qc}{refined} · "
                  f"id {result.get('query_pident', 0):.0f}% cov {result.get('query_coverage', 0):.0f}%"
                  f"{paralog} · ref `{result.get('ref_accession', '?')}`")
     else:
@@ -383,6 +388,17 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                 extra = kept or None
         return write_guide_fasta(locus, guide_path, extra_records=extra)
 
+    qc_outcomes: list = []   # (sample, locus, verdict, detail) — for a loud, persistent QC summary
+
+    def _qc_record(sample, locus, result, status):
+        if result is None:
+            verdict = "DROPPED" if "strict QC" in status else "FAILED"
+        elif result.get("n_internal_stops", 0) or result.get("len_mod3", 0):
+            verdict = "REVIEW"
+        else:
+            verdict = "PASS"
+        qc_outcomes.append((sample, locus, verdict, status))
+
     done = 0
     for strain_id in sel:
         assembly = registry[strain_id].get("assembly_path", "")
@@ -408,12 +424,14 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                 result, status = _extract_coding(strain_id, assembly, locus, ref_fa,
                                                  str(strain_out / locus))
             _report(locus, result, status)
+            _qc_record(strain_id, locus, result, status)
             done += 1; prog.progress(done / total)
         for gname, gref in goi_genes.items():
             with st.spinner(f"[{strain_id}] {gname} (GOI)…"):
                 result, status = _extract_coding(strain_id, assembly, gname, gref,
                                                  str(strain_out / gname))
             _report(gname, result, status, goi=True)
+            _qc_record(strain_id, gname, result, status)
             done += 1; prog.progress(done / total)
 
     combined = {}
@@ -433,10 +451,33 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                       + (f"; dropped_refs={n_dropped}" if n_dropped else ""))
     st.session_state["exonerate_combined"] = {loc: {k: v for k, v in m.items()}
                                               for loc, m in combined.items()}
+    st.session_state["exonerate_qc"] = qc_outcomes
     st.success("Coding extraction complete — provenance recorded in the manifest.")
     st.rerun()
 
 # ── Results ───────────────────────────────────────────────────────────────────
+qc = st.session_state.get("exonerate_qc")
+if qc:
+    from collections import Counter
+    vc = Counter(v for _, _, v, _ in qc)
+    st.markdown("---")
+    st.markdown(f"**QC:** {vc.get('PASS', 0)} clean · {vc.get('REVIEW', 0)} review · "
+                f"{vc.get('DROPPED', 0)} dropped · {vc.get('FAILED', 0)} failed")
+    attn = [r for r in qc if r[2] in ("REVIEW", "DROPPED", "FAILED")]
+    if attn:
+        # Loud + persistent: flagged / dropped sequences never just vanish from the combined files.
+        with st.expander(f"⚠️ {len(attn)} sequence(s) need attention — not in the clean set",
+                         expanded=True):
+            st.dataframe(pd.DataFrame([{"Sample": s, "Locus": l, "Verdict": v, "Detail": d}
+                                       for s, l, v, d in attn]),
+                         width="stretch", hide_index=True)
+            if vc.get("DROPPED"):
+                st.warning("**Dropped** rows were excluded from the combined FASTAs by **Strict QC** "
+                           "(frameshift / internal stop). Uncheck Strict QC to keep them written-and-"
+                           "flagged, or check the assembly. Note: a splice-boundary frameshift is "
+                           "often recovered automatically by boundary-refinement escalation (D-030) — "
+                           "if these persist, the genomic DNA may still be clean (verify the gene).")
+
 res = st.session_state.get("exonerate_combined")
 if res:
     st.markdown("---")

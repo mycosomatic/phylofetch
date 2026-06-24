@@ -5,6 +5,15 @@
 
 ## 2026-06-23
 
+- **Auto-escalating boundary refinement + loud write-and-flag (D-030).** The RPB2 frameshift in the
+  *A.* aff. *eureka* strains is a tool artifact, not the genome (assembled DNA is ~99.9% identical to
+  clean strains — 3 substitutions, **zero indels** — but Exonerate misplaces a splice boundary).
+  Extraction now **auto-escalates `--refine`** (none → region → full) when a CDS comes out
+  frameshifted and keeps the cleanest — recovering 3 of the 4 affected strains automatically
+  (S11-3-B4: 42 stops → 0) while the clean path stays a single fast pass. The genuinely-stuck S9 stays
+  **written-and-flagged**, never dropped. The Exonerate page gained a **persistent QC summary**
+  (PASS/REVIEW/DROPPED/FAILED + an expanded attention table), so flagged/dropped strains never
+  silently vanish; a Strict-QC drop is called out. +4 tests.
 - **Geneious-importable GFF (D-029).** Importing `exonerate.gff` into Geneious failed (*"Expected a
   number. Found: …'--model'"*) — that file is Exonerate's raw stdout, which starts with
   `Command line: [exonerate --model …]` and isn't valid GFF. It's now saved as **`exonerate_raw.txt`**

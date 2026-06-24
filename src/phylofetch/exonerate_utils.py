@@ -618,6 +618,7 @@ def extract_locus_exonerate(
     evalue: float = 1e-20,
     threads: int = 4,
     strict_qc: bool = False,
+    escalate_refine: bool = True,
     manager=None,
     run_dir: str = "",
 ) -> tuple[Optional[dict], str]:
@@ -668,36 +669,61 @@ def extract_locus_exonerate(
                     narrowed = True
     # If narrowing produced nothing, target_fasta stays = whole assembly.
 
-    # ── Step 2: run Exonerate ──
-    rc, raw, _gff = run_exonerate(
-        reference_fasta, target_fasta, model, output_dir,
-        exonerate_bin=exonerate_bin, minintron=minintron, maxintron=maxintron,
-        bestn=bestn, score=score, refine=refine, geneticcode=geneticcode,
-        manager=manager, action=f"exonerate_{locus_name}_{strain_id}",
-    )
-    if rc != 0:
-        return None, f"Exonerate failed (exit {rc})"
+    # ── Steps 2-3: run Exonerate + build result, escalating boundary refinement when the CDS
+    # comes out frameshifted / with internal stops (D-030). Exonerate's protein2genome can misplace
+    # a splice boundary by a base or two on some sequences (a couple of substitutions near a splice
+    # site are enough), frameshifting the reconstructed CDS even though the genomic DNA is clean.
+    # `--refine region`/`full` re-optimizes the boundaries and recovers the frame in most such cases.
+    # The first pass uses the requested `refine`; only if that isn't clean (and `escalate_refine`)
+    # do we retry at higher refinement, keeping the cleanest result — so the common clean case stays
+    # a single fast pass.
+    REFINE_ORDER = ["none", "region", "full"]
+    start = REFINE_ORDER.index(refine) if refine in REFINE_ORDER else 0
+    levels = REFINE_ORDER[start:] if escalate_refine else [refine]
 
-    models = parse_exonerate_gff(raw)
-    if not models:
-        return None, "Exonerate found no gene model (try whole-assembly target or lower thresholds)"
+    def _run_build(refine_level: str):
+        rc, raw, _gff = run_exonerate(
+            reference_fasta, target_fasta, model, output_dir,
+            exonerate_bin=exonerate_bin, minintron=minintron, maxintron=maxintron,
+            bestn=bestn, score=score, refine=refine_level, geneticcode=geneticcode,
+            manager=manager, action=f"exonerate_{locus_name}_{strain_id}",
+        )
+        if rc != 0:
+            return None, f"Exonerate failed (exit {rc})"
+        ms = parse_exonerate_gff(raw)
+        if not ms:
+            return None, "Exonerate found no gene model (try whole-assembly target or lower thresholds)"
+        bm, others = select_best_model(ms, min_score=(score or 0.0))
+        if bm is None:
+            return None, f"No Exonerate model scored ≥ {score}"
+        cseq = contig_seq_cache.get(bm["contig"]) or _load_contig(assembly_fasta, bm["contig"])
+        if cseq is None:
+            return None, f"Contig '{bm['contig']}' not found in assembly"
+        res = build_result_from_model(
+            bm, cseq, strain_id, locus_name,
+            ref_accession=ref_acc, exonerate_version=_probe_exonerate_version(exonerate_bin),
+            geneticcode=geneticcode, n_other_models=len(others),
+        )
+        return res, "OK"
 
-    best_model, others = select_best_model(models, min_score=(score or 0.0))
-    if best_model is None:
-        return None, f"No Exonerate model scored ≥ {score}"
-
-    # ── Step 3: build result + QC ──
-    contig_seq = contig_seq_cache.get(best_model["contig"])
-    if contig_seq is None:
-        contig_seq = _load_contig(assembly_fasta, best_model["contig"])
-    if contig_seq is None:
-        return None, f"Contig '{best_model['contig']}' not found in assembly"
-
-    result = build_result_from_model(
-        best_model, contig_seq, strain_id, locus_name,
-        ref_accession=ref_acc, exonerate_version=_probe_exonerate_version(exonerate_bin),
-        geneticcode=geneticcode, n_other_models=len(others),
-    )
+    result = None
+    best_q = None
+    used_refine = refine
+    last_err = "Exonerate found no gene model"
+    for lvl in levels:
+        res, st = _run_build(lvl)
+        if res is None:
+            last_err = st
+            continue
+        q = (res["len_mod3"] == 0, -res["n_internal_stops"])   # frame-OK first, then fewer stops
+        if best_q is None or q > best_q:
+            result, best_q, used_refine = res, q, lvl
+        if res["n_internal_stops"] == 0 and res["len_mod3"] == 0:
+            break                                              # clean — stop escalating
+    if result is None:
+        return None, last_err
+    result["refine_used"] = used_refine
+    result["refine_escalated"] = used_refine != refine
 
     if strict_qc and (result["n_internal_stops"] > 0 or result["len_mod3"] != 0):
         return None, (
@@ -724,4 +750,6 @@ def extract_locus_exonerate(
     if result["n_internal_stops"] > 0 or result["len_mod3"] != 0:
         status = (f"OK (QC: review — {result['n_internal_stops']} internal stop(s), "
                   f"len % 3 = {result['len_mod3']})")
+    if result.get("refine_escalated"):
+        status += f" [boundary-refined: refine={used_refine}]"
     return result, status
