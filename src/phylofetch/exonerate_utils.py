@@ -43,6 +43,7 @@ Exonerate (and narrowing-BLAST) call is logged with its command + tool version.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -587,9 +588,11 @@ def write_exonerate_log(result: dict, output_dir: str,
         f"  paralog_cands {result.get('n_other_models', 0)} other model(s)",
         "",
         "[QC]",
+        f"  geneticcode    {result.get('geneticcode', 1)}",
         f"  reading_frame {frame_note}",
         f"  internal_stops {stops}",
         f"  tcs_crosscheck {result.get('tcs_matches')}",
+        f"  refine_used    {result.get('refine_used', 'none')}",
         f"  verdict        {qc_verdict}",
         "",
     ]
@@ -628,6 +631,7 @@ def extract_locus_exonerate(
     threads: int = 4,
     strict_qc: bool = False,
     escalate_refine: bool = True,
+    escalate_ceiling: str = "region",
     manager=None,
     run_dir: str = "",
 ) -> tuple[Optional[dict], str]:
@@ -693,10 +697,17 @@ def extract_locus_exonerate(
     # `--refine region`/`full` re-optimizes the boundaries and recovers the frame in most such cases.
     # The first pass uses the requested `refine`; only if that isn't clean (and `escalate_refine`)
     # do we retry at higher refinement, keeping the cleanest result — so the common clean case stays
-    # a single fast pass.
+    # a single fast pass. Escalation stops at `escalate_ceiling` (default "region"): `--refine full`
+    # re-runs *exhaustive* DP over the whole narrowed contig (minutes on a multi-Mb contig / long
+    # multi-intron gene like RPB2) and — verified on the aff. eureka strains — rescued nothing that
+    # `region` didn't, so it is opt-in (Thorough effort / the page's targeted deep-refine pass). (D-035)
     REFINE_ORDER = ["none", "region", "full"]
     start = REFINE_ORDER.index(refine) if refine in REFINE_ORDER else 0
-    levels = REFINE_ORDER[start:] if escalate_refine else [refine]
+    if escalate_refine:
+        ceil = REFINE_ORDER.index(escalate_ceiling) if escalate_ceiling in REFINE_ORDER else 1
+        levels = REFINE_ORDER[start:max(ceil, start) + 1]
+    else:
+        levels = [refine]
 
     def _run_build(refine_level: str):
         rc, raw, _gff = run_exonerate(
@@ -741,6 +752,7 @@ def extract_locus_exonerate(
         return None, last_err
     result["refine_used"] = used_refine
     result["refine_escalated"] = used_refine != refine
+    result["geneticcode"] = geneticcode   # recorded so a later re-validation uses the SAME table
 
     if strict_qc and (result["n_internal_stops"] > 0 or result["len_mod3"] != 0):
         return None, (
@@ -771,3 +783,78 @@ def extract_locus_exonerate(
         status += f" [boundary-refined: refine={used_refine}]"
     status += narrow_warning
     return result, status
+
+
+def scan_flagged_cds(per_strain_dir: str, geneticcode: int = 1) -> list[dict]:
+    """
+    Stateless scan of extracted coding loci for a CDS that needs attention (frameshift / internal
+    stop), so a targeted ``--refine full`` rescue pass can be offered at **any** time — including a
+    future session, e.g. when downstream analysis fails — without relying on the run's session
+    state. Reads each ``<strain>/<locus>/<locus>_CDS.fasta`` and re-validates its reading frame
+    (`validate_cds`), independent of how it was produced (D-035).
+
+    Returns one row per flagged ``(strain, locus)``::
+
+        {strain, locus, locus_dir, cds_length, len_mod3, n_internal_stops, refine_used, geneticcode}
+
+    The CDS is re-validated under the genetic code recorded in its extraction log — **not** the
+    `geneticcode` argument — whenever the log records one, so a later change to the page's genetic-code
+    widget can't by itself flip a clean CDS to flagged or vice versa (D-036 review). The argument is
+    only the fallback for loci extracted before the code was logged. ``refine_used`` is parsed from
+    the log when present, so the user can see which refinement level already ran; "" when unknown.
+    Clean CDS are omitted.
+    """
+    rows: list[dict] = []
+    root = Path(per_strain_dir)
+    if not root.is_dir():
+        return rows
+    for strain_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for locus_dir in sorted(p for p in strain_dir.iterdir() if p.is_dir()):
+            locus = locus_dir.name
+            cds_fa = locus_dir / f"{locus}_CDS.fasta"
+            if not cds_fa.exists():
+                continue
+            try:
+                recs = list(SeqIO.parse(str(cds_fa), "fasta"))
+            except Exception:
+                continue
+            if not recs:
+                continue
+            log = locus_dir / f"{locus}_extraction.log"
+            log_text = log.read_text(errors="replace") if log.exists() else ""
+            # Re-validate under the code the locus was ORIGINALLY extracted with (logged), not the
+            # caller's current widget — otherwise a code change alone could flip the verdict.
+            mgc = re.search(r"geneticcode[:= ]+(\d+)", log_text)
+            gc = int(mgc.group(1)) if mgc else geneticcode
+            qc = validate_cds(str(recs[0].seq), geneticcode=gc)
+            if qc["len_mod3"] == 0 and qc["n_internal_stops"] == 0:
+                continue   # clean — nothing to rescue
+            m = re.search(r"refine[_ ]?used[:= ]+(\w+)|boundary-refined: refine=(\w+)", log_text)
+            refine_used = (m.group(1) or m.group(2) or "") if m else ""
+            rows.append({
+                "strain": strain_dir.name, "locus": locus, "locus_dir": str(locus_dir),
+                "cds_length": qc["length"], "len_mod3": qc["len_mod3"],
+                "n_internal_stops": qc["n_internal_stops"], "refine_used": refine_used,
+                "geneticcode": gc,
+            })
+    return rows
+
+
+def resolve_guide_path(locus: str, project_dir: str, goi_dir, ref_dir,
+                       is_goi: bool = False) -> Optional[str]:
+    """
+    Find the guide FASTA that would extract ``locus``, for a deep-refine re-run (D-035): the saved
+    bundled/both/protein-library query (``scratch/guides``), a gene-of-interest ref
+    (``_goi_refs``), or the nucleotide library FASTA — whichever exists, with **no directory side
+    effects**. For a gene of interest, the user's uploaded ortholog takes precedence over a
+    same-named catalogue guide (D-036 review: a GOI named e.g. "RPB2" must not silently resolve to
+    the bundled RPB2 guide). Returns ``None`` when no guide is on disk.
+    """
+    goi = Path(goi_dir) / f"{locus}.fasta"
+    scratch = Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta"
+    lib = Path(ref_dir) / locus / f"{locus}_refs.fasta"
+    order = [goi, scratch, lib] if is_goi else [scratch, goi, lib]
+    for c in order:
+        if c.exists() and c.stat().st_size > 0:
+            return str(c)
+    return None

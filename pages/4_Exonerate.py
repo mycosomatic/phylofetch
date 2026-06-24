@@ -16,6 +16,7 @@ Standalone + chainable; runs alongside the old 2_Loci_Extraction page until the 
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +29,11 @@ from phylofetch.blast_loci_utils import (
     merge_per_strain_outputs,
 )
 from phylofetch.config import load_config
-from phylofetch.exonerate_utils import extract_locus_exonerate
+from phylofetch.exonerate_utils import (
+    extract_locus_exonerate,
+    resolve_guide_path,
+    scan_flagged_cds,
+)
 from phylofetch.ncbi_utils import (
     LOCUS_CATALOGUE,
     count_refs,
@@ -235,11 +240,22 @@ with sc:
     ex_bestn = st.number_input("Report top N models", value=1, min_value=1, max_value=20,
                                help=">1 surfaces paralogs / tandem duplicates.")
     ex_geneticcode = st.number_input("Genetic code (NCBI)", value=1, min_value=1, max_value=33)
-    ex_refine = st.selectbox(
-        "Boundary refinement (start)", ["none", "region", "full"],
-        help="Exonerate splice-boundary optimization. This is the **starting** level — if a CDS "
-             "comes out frameshifted/with internal stops it auto-escalates region → full and keeps "
-             "the cleanest (D-030), so 'none' is a fine fast default.")
+    ex_effort = st.selectbox(
+        "Refinement effort", ["Balanced — escalate to region (recommended)",
+                              "Fast — single pass, no refinement",
+                              "Thorough — escalate to full (slow)"],
+        help="How hard Exonerate works to fix a frameshifted / internal-stop CDS by re-optimizing "
+             "splice boundaries (D-035). **Balanced**: none → `--refine region` (fixes the common "
+             "splice misplacement, fast). **Fast**: one pass, no rescue. **Thorough**: also tries "
+             "`--refine full` — exhaustive DP over the *whole* narrowed contig, minutes per strain "
+             "on a long multi-intron gene like RPB2, and it rarely beats region. Prefer Balanced, "
+             "then run full on just the flagged sequences via the deep-refine pass at the bottom.")
+    if ex_effort.startswith("Fast"):
+        ex_refine, ex_escalate, ex_ceiling = "none", False, "none"
+    elif ex_effort.startswith("Thorough"):
+        ex_refine, ex_escalate, ex_ceiling = "none", True, "full"
+    else:
+        ex_refine, ex_escalate, ex_ceiling = "none", True, "region"
     ex_narrow = st.checkbox("BLAST-narrow to best contig (faster)", value=True)
     ex_strict_qc = st.checkbox("Strict QC (reject frameshift / internal stop)", value=False)
 
@@ -318,7 +334,8 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
         os.makedirs(locus_out, exist_ok=True)
         params = {"min_pident": min_pident, "maxintron": int(ex_maxintron),
                   "bestn": int(ex_bestn), "narrow": ex_narrow, "refine": ex_refine,
-                  "geneticcode": int(ex_geneticcode), "evalue": evalue_float}
+                  "escalate_ceiling": ex_ceiling, "geneticcode": int(ex_geneticcode),
+                  "evalue": evalue_float}
         # Exonerate frame-safe path (skipped in relaxed mode even if exonerate is installed).
         if exonerate_ok and not relaxed_blast:
             _rid, rdir = manager.dry_run(
@@ -331,7 +348,8 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
                 strain_id=strain_id, locus_name=locus, exonerate_bin=exonerate_bin,
                 blastn_bin=blastn_bin, tblastn_bin=tblastn_bin, narrow=ex_narrow,
                 minintron=int(ex_minintron), maxintron=int(ex_maxintron), bestn=int(ex_bestn),
-                refine=ex_refine, geneticcode=int(ex_geneticcode), min_pident=float(min_pident),
+                refine=ex_refine, escalate_refine=ex_escalate, escalate_ceiling=ex_ceiling,
+                geneticcode=int(ex_geneticcode), min_pident=float(min_pident),
                 evalue=evalue_float, threads=int(threads), strict_qc=ex_strict_qc,
                 manager=manager, run_dir=str(rdir))
         # BLAST HSP-as-exon path: relaxed genomic amplicon (require_complete_cds=False, the
@@ -497,3 +515,108 @@ if res:
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.caption("No combined outputs produced.")
+
+# ── Deep refinement (optional, slow; re-runnable any time) ─────────────────────
+# A targeted `--refine full` rescue pass on just the flagged CDS, skipped by the default
+# Balanced/Fast effort. Stateless (scans disk), so it works in a later session too — e.g. if a
+# tree/alignment looks off, come back and deep-refine the still-flagged sequences (D-035).
+st.markdown("---")
+st.subheader("🔧 Deep refinement (optional, slow)")
+st.caption("Run `--refine full` on just the **flagged** coding CDS (frameshift / internal stop) "
+           "from a previous extraction — the exhaustive boundary pass the default effort skips. "
+           "Safe to run any time (including a later session); it reuses the guides saved during "
+           "extraction and **keeps the new CDS only if it is strictly cleaner** (D-035).")
+
+
+def _guide_for(locus: str):
+    """Guide for a deep-refine re-run; a gene of interest (its own `_goi_refs/` file exists) takes
+    precedence over a same-named catalogue guide (D-036 review)."""
+    return resolve_guide_path(locus, project_dir, goi_dir, ref_dir,
+                              is_goi=(goi_dir / f"{locus}.fasta").exists())
+
+
+flagged = scan_flagged_cds(str(per_strain_dir), geneticcode=int(ex_geneticcode))
+if not flagged:
+    st.caption("✅ No flagged coding CDS in this project's outputs — nothing to deep-refine.")
+elif not exonerate_ok:
+    st.error("⚠️ exonerate not found — deep refinement requires it.")
+else:
+    st.warning("⚠️ Deep refinement **re-extracts using the current Settings above** (intron sizes, "
+               "min identity, narrowing) plus the saved guide — not necessarily the exact "
+               "parameters that produced the original. It keeps the new CDS **only if strictly "
+               "cleaner**; otherwise the original is left untouched.")
+    st.dataframe(pd.DataFrame([{
+        "Strain": r["strain"], "Locus": r["locus"], "CDS bp": r["cds_length"],
+        "len%3": r["len_mod3"], "Internal stops": r["n_internal_stops"],
+        "Refine already run": r["refine_used"] or "—",
+        "Guide on disk": "✅" if _guide_for(r["locus"]) else "❌ re-extract first",
+    } for r in flagged]), width="stretch", hide_index=True)
+
+    rescuable = [r for r in flagged if _guide_for(r["locus"])]
+    if len(rescuable) < len(flagged):
+        miss = sorted({r["locus"] for r in flagged if not _guide_for(r["locus"])})
+        st.warning(f"No saved guide for: {', '.join(miss)} — re-run extraction for these first.")
+
+    if rescuable and st.button(f"🔧 Run --refine full on {len(rescuable)} flagged sequence(s)",
+                               type="primary"):
+        manager = RunManager(project_dir)
+        prog = st.progress(0.0)
+        loci_touched, n_fixed, n_kept = set(), 0, 0
+        for i, r in enumerate(rescuable):
+            strain, locus = r["strain"], r["locus"]
+            asm = registry.get(strain, {}).get("assembly_path", "")
+            if not asm or not os.path.exists(asm):
+                st.write(f"⚠️ {strain}/{locus}: assembly file not found — skipped")
+                prog.progress((i + 1) / len(rescuable))
+                continue
+            locus_dir = Path(r["locus_dir"])
+            before = (r["n_internal_stops"], r["len_mod3"])
+            before_key = (before[1] == 0, -before[0])          # (frame_ok, -stops): higher=cleaner
+            # Snapshot the original so a worse / failed re-run (e.g. drifted settings) can't
+            # clobber a better result — keep the new CDS only if strictly cleaner (D-035 review).
+            backup_root = Path(tempfile.mkdtemp(prefix="deeprefine_"))
+            backup = backup_root / "bak"
+            shutil.copytree(locus_dir, backup)
+            try:
+                with st.spinner(f"Deep-refining {strain}/{locus} (--refine full)…"):
+                    result, status = extract_locus_exonerate(
+                        assembly_fasta=asm, reference_fasta=_guide_for(locus),
+                        output_dir=str(locus_dir), strain_id=strain, locus_name=locus,
+                        exonerate_bin=exonerate_bin, blastn_bin=blastn_bin, tblastn_bin=tblastn_bin,
+                        narrow=ex_narrow, minintron=int(ex_minintron), maxintron=int(ex_maxintron),
+                        bestn=int(ex_bestn), refine="none", escalate_refine=True,
+                        escalate_ceiling="full", geneticcode=int(r.get("geneticcode", ex_geneticcode)),
+                        min_pident=float(min_pident), evalue=evalue_float, threads=int(threads),
+                        strict_qc=False, manager=manager)
+            except Exception as exc:  # noqa: BLE001 — never let one strain abort the batch
+                result, status = None, f"error: {exc}"
+
+            keep = bool(result) and (result.get("len_mod3", 1) == 0,
+                                     -result.get("n_internal_stops", 99)) > before_key
+            if keep:
+                after = (result.get("n_internal_stops", 0), result.get("len_mod3", 0))
+                loci_touched.add(locus)
+                if after == (0, 0):
+                    n_fixed += 1
+                st.write(f"✅ improved {strain}/{locus}: stops {before[0]}→{after[0]}, "
+                         f"len%3 {before[1]}→{after[1]} · refine={result.get('refine_used', '?')}")
+                shutil.rmtree(backup_root, ignore_errors=True)
+            else:
+                # Not cleaner (or failed) → restore the original, untouched.
+                shutil.rmtree(locus_dir, ignore_errors=True)
+                shutil.move(str(backup), str(locus_dir))
+                shutil.rmtree(backup_root, ignore_errors=True)
+                n_kept += 1
+                detail = status if not result else f"no improvement (stops {before[0]}, len%3 {before[1]})"
+                st.write(f"↩️ {strain}/{locus}: {detail} — kept original")
+            prog.progress((i + 1) / len(rescuable))
+
+        for locus in sorted(loci_touched):
+            merge_per_strain_outputs(str(per_strain_dir), str(combined_dir), locus)
+        if loci_touched:
+            update_step(project_dir, "coding", status="done",
+                        notes=(f"deep_refine (--refine full on flagged): {n_fixed} now clean, "
+                               f"{len(loci_touched)} locus dir(s) updated, {n_kept} kept as-is"))
+        st.success(f"Deep refinement complete — {n_fixed}/{len(rescuable)} now frame-clean, "
+                   f"{len(loci_touched)} updated, {n_kept} kept unchanged (not cleaner).")
+        st.rerun()

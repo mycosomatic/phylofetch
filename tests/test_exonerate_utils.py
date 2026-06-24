@@ -325,18 +325,161 @@ class TestRefineEscalation:
         assert calls == ["none"] and "boundary-refined" not in status     # single fast pass
 
     def test_unfixable_keeps_best_and_flags_not_dropped(self, tmp_path, monkeypatch):
+        # D-035: default escalation now caps at `region` (full is opt-in), so an unfixable CDS
+        # tries none→region only — and is still kept-and-flagged, never dropped.
         calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="never")
         res, status = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
                                                  narrow=False, refine="none")
         assert res is not None                                            # written, not dropped
         assert res["n_internal_stops"] == 9 and "QC: review" in status
+        assert calls == ["none", "region"]                                # capped at region (D-035)
+
+    def test_default_ceiling_region_skips_full(self, tmp_path, monkeypatch):
+        # The expensive `--refine full` pass must NOT run under the default ceiling (D-035).
+        calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="never")
+        eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
+                                   narrow=False, refine="none")
+        assert "full" not in calls
+
+    def test_ceiling_full_escalates_to_full(self, tmp_path, monkeypatch):
+        # The opt-in Thorough effort / deep-refine pass raises the ceiling to full.
+        calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="never")
+        res, _ = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
+                                            narrow=False, refine="none",
+                                            escalate_ceiling="full")
         assert calls == ["none", "region", "full"]                        # tried everything
+        assert res is not None
 
     def test_disabled_does_not_escalate(self, tmp_path, monkeypatch):
         calls, ref, asm, eu = self._setup(tmp_path, monkeypatch, clean_at="region")
         res, status = eu.extract_locus_exonerate(asm, ref, str(tmp_path / "o"), "S", "RPB2",
                                                  narrow=False, refine="none", escalate_refine=False)
         assert calls == ["none"] and res["n_internal_stops"] == 9         # stayed frameshifted
+
+
+class TestScanFlaggedCds:
+    """D-035: stateless disk scan that finds flagged CDS for the targeted deep-refine pass."""
+
+    def _write_cds(self, root, strain, locus, seq):
+        d = root / strain / locus
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{locus}_CDS.fasta").write_text(f">{strain}_{locus}\n{seq}\n")
+        return d
+
+    def test_flags_internal_stop_and_frameshift_omits_clean(self, tmp_path):
+        from phylofetch.exonerate_utils import scan_flagged_cds
+        self._write_cds(tmp_path, "S1", "RPB2", "ATGTAAAAA")       # internal stop (TAA), len%3=0
+        self._write_cds(tmp_path, "S2", "TUB2", "ATGAAAC")         # len%3 = 1 (frameshift)
+        self._write_cds(tmp_path, "S3", "TEF1", "ATGAAACCCGGG")    # clean: M K P G
+        rows = scan_flagged_cds(str(tmp_path))
+        flagged = {(r["strain"], r["locus"]) for r in rows}
+        assert ("S1", "RPB2") in flagged
+        assert ("S2", "TUB2") in flagged
+        assert ("S3", "TEF1") not in flagged           # clean → omitted
+        rpb2 = next(r for r in rows if r["locus"] == "RPB2")
+        assert rpb2["n_internal_stops"] == 1 and rpb2["len_mod3"] == 0
+
+    def test_clean_cds_ending_in_terminal_stop_is_omitted(self, tmp_path):
+        # ATG AAA TAA = M K * — a clean CDS *with* a terminal stop. validate_cds must not count the
+        # terminal stop as internal, so the scan omits it (guards the subtraction the scan relies on).
+        from phylofetch.exonerate_utils import scan_flagged_cds
+        self._write_cds(tmp_path, "S1", "RPB2", "ATGAAATAA")
+        assert all(r["locus"] != "RPB2" for r in scan_flagged_cds(str(tmp_path)))
+
+    def test_reads_refine_used_from_log_real_format(self, tmp_path):
+        # Use the ACTUAL log format write_exonerate_log emits (D-035 review: the old test
+        # fabricated a token the writer never wrote).
+        from phylofetch.exonerate_utils import scan_flagged_cds
+        d = self._write_cds(tmp_path, "S1", "RPB2", "ATGTAAAAA")
+        (d / "RPB2_extraction.log").write_text(
+            "[QC]\n  reading_frame len % 3 == 0 (OK)\n  refine_used    region\n"
+            "  verdict        REVIEW\n")
+        rows = scan_flagged_cds(str(tmp_path))
+        assert rows[0]["refine_used"] == "region"
+
+    def test_write_exonerate_log_actually_records_refine_used(self, tmp_path):
+        # The producer side: write_exonerate_log must emit the refine_used line the scan reads.
+        from phylofetch.exonerate_utils import write_exonerate_log
+        result = {
+            "strain_id": "S1", "locus_name": "RPB2", "n_introns": 0, "introns": [],
+            "len_mod3": 0, "n_internal_stops": 0, "blast_type": "exonerate",
+            "contig_id": "c1", "amplicon_start": 1, "amplicon_end": 99, "strand": "+",
+            "n_exons": 1, "cds_length": 99, "amplicon_length": 99, "refine_used": "region",
+        }
+        log = write_exonerate_log(result, str(tmp_path))
+        with open(log) as f:
+            assert "refine_used    region" in f.read()
+
+    def test_revalidates_under_logged_genetic_code_not_the_argument(self, tmp_path):
+        # ATG TGA AAA = M * K under standard code 1 (TGA = internal stop → flagged), but M W K under
+        # mold-mito code 4 (TGA = Trp → clean). The scan must re-validate under the code the locus was
+        # EXTRACTED with (logged), not the caller's current widget, so a code change alone can't flip
+        # the verdict (D-036 review). Here the log says 4, the arg says 1 → recorded code 4 wins → omit.
+        from phylofetch.exonerate_utils import scan_flagged_cds
+        d = self._write_cds(tmp_path, "S1", "RPB2", "ATGTGAAAA")
+        (d / "RPB2_extraction.log").write_text("[QC]\n  geneticcode    4\n  verdict PASS\n")
+        assert all(r["locus"] != "RPB2" for r in scan_flagged_cds(str(tmp_path), geneticcode=1))
+
+    def test_falls_back_to_argument_code_when_log_has_none(self, tmp_path):
+        # No geneticcode recorded (pre-fix extraction) → fall back to the caller's default; under
+        # code 1 the same TGA-bearing CDS is flagged, and the row carries the code actually used.
+        from phylofetch.exonerate_utils import scan_flagged_cds
+        self._write_cds(tmp_path, "S1", "RPB2", "ATGTGAAAA")        # no log written
+        rows = scan_flagged_cds(str(tmp_path), geneticcode=1)
+        rpb2 = next(r for r in rows if r["locus"] == "RPB2")
+        assert rpb2["n_internal_stops"] == 1 and rpb2["geneticcode"] == 1
+
+    def test_write_exonerate_log_records_genetic_code(self, tmp_path):
+        # Producer side: the code must be persisted for the scan above to read it back.
+        from phylofetch.exonerate_utils import write_exonerate_log
+        result = {
+            "strain_id": "S1", "locus_name": "RPB2", "n_introns": 0, "introns": [],
+            "len_mod3": 0, "n_internal_stops": 0, "blast_type": "exonerate",
+            "contig_id": "c1", "amplicon_start": 1, "amplicon_end": 99, "strand": "+",
+            "n_exons": 1, "cds_length": 99, "amplicon_length": 99, "refine_used": "none",
+            "geneticcode": 4,
+        }
+        with open(write_exonerate_log(result, str(tmp_path))) as f:
+            assert "geneticcode    4" in f.read()
+
+    def test_empty_or_missing_dir_returns_empty(self, tmp_path):
+        from phylofetch.exonerate_utils import scan_flagged_cds
+        assert scan_flagged_cds(str(tmp_path / "nope")) == []
+        assert scan_flagged_cds(str(tmp_path)) == []
+
+
+class TestResolveGuidePath:
+    """D-035 / D-036 review: guide lookup for the deep-refine re-run."""
+
+    def _scratch(self, root, locus):
+        d = root / "scratch" / "guides"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{locus}_guide.fasta").write_text(">g\nMKL\n")
+
+    def test_prefers_scratch_guide_for_catalogue_locus(self, tmp_path):
+        from phylofetch.exonerate_utils import resolve_guide_path
+        self._scratch(tmp_path, "RPB2")
+        got = resolve_guide_path("RPB2", str(tmp_path), tmp_path / "goi", tmp_path / "refs")
+        assert got.endswith("RPB2_guide.fasta")
+
+    def test_goi_takes_precedence_over_same_named_catalogue_guide(self, tmp_path):
+        from phylofetch.exonerate_utils import resolve_guide_path
+        self._scratch(tmp_path, "RPB2")                       # catalogue guide exists
+        goi = tmp_path / "goi"
+        goi.mkdir()
+        (goi / "RPB2.fasta").write_text(">user\nMKLV\n")       # user's GOI ortholog
+        got = resolve_guide_path("RPB2", str(tmp_path), goi, tmp_path / "refs", is_goi=True)
+        assert got == str(goi / "RPB2.fasta")                 # GOI wins
+
+    def test_none_when_no_guide(self, tmp_path):
+        from phylofetch.exonerate_utils import resolve_guide_path
+        assert resolve_guide_path("XX", str(tmp_path), tmp_path / "goi", tmp_path / "refs") is None
+
+    def test_no_directory_side_effect(self, tmp_path):
+        from phylofetch.exonerate_utils import resolve_guide_path
+        ref = tmp_path / "refs"
+        resolve_guide_path("ZZ", str(tmp_path), tmp_path / "goi", ref)
+        assert not (ref / "ZZ").exists()                      # must not create the dir
 
 
 # ── End-to-end (requires the exonerate binary) ─────────────────────────────
