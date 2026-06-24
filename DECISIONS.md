@@ -912,3 +912,41 @@ Format for each entry:
   (PASS/REVIEW/DROPPED/FAILED + attention table + Strict-QC warning), per-locus `refined:` note,
   refinement control reframed. +4 tests → **298 passing**. Verified live: S11-3-B4 self-heals via
   region, S9 stays flagged (not dropped), NS26 single clean pass.
+
+### D-031 (2026-06-23) — Phase-grouped sidebar navigation (explicit `st.navigation`)
+- **Decision:** Replace Streamlit's filename-ordered `pages/` auto-discovery with an **explicit
+  grouped `st.navigation`** defined in `app.py`, so the sidebar reads as the pipeline rather than a
+  flat 12-item list. Pages are grouped under phase headers — **Set up** (Project Setup, Assembly
+  Manager) · **References (NCBI)** (NCBI References, Reference Taxa) · **Extract loci** (ITSx · rDNA,
+  Exonerate · coding, Primers · PCR) · **Tree prep** (Codon Tip Prep, Alignment Prep) ·
+  **Phylogenomics & tree** (BUSCO Phylogenomics, Tree Visualization) — with **Home** and the
+  **Workflow** orchestrator lifted to a header-less group at the very top (empty-string section key)
+  as the guided entry point. The landing dashboard + Tool Settings became the `Home` page (a callable
+  registered `default=True`); `expanded=True` keeps all 13 entries visible (default collapses at >12).
+- **Why:** The flat auto-nav ordered pages purely by numeric filename prefix, which buried the
+  Workflow checklist in the middle of the extraction steps and gave no sense of pipeline phases. The
+  user asked for "a more logical flow"; the **By-stage** grouping (chosen over a strict data-flow
+  grouping) keeps the three extraction strategies together (matching the D-012 "three strategies"
+  model), pairs the two NCBI-fetch pages, and groups the two matrix-prep pages.
+- **Compatibility:** Streamlit ≥1.58 allows **multiple additive `st.set_page_config` calls**
+  (`commands/page_config.py`), so every page keeps its own `set_page_config` (which sets its
+  browser-tab title/icon) while `st.Page(title=…, icon=…)` sets the sidebar label/icon. Pages are
+  registered with their **on-disk relative paths** (`pages/N_*.py`) so the Workflow page's
+  `st.page_link("pages/…")` calls (D-012 sub-decision) keep resolving unchanged. **No page files were
+  renamed or moved** — the numeric prefixes still exist on disk but no longer drive ordering.
+- **Alternatives considered:** (a) **Simple renumber/relabel of the flat list** — rejected: fixes the
+  Workflow-in-the-middle problem but still no phase headers, doesn't deliver "flow". (b) **Subfolder
+  grouping under `pages/`** — rejected: would require moving every page file (breaking the
+  `st.page_link` path strings and the on-disk layout in CLAUDE.md) for the same result. (c) **Strict
+  data-flow grouping** (NCBI References inside "Extract loci"; Reference Taxa paired with Codon Tip
+  Prep) — rejected by the user in favour of by-stage; ITSx/Primers don't use NCBI refs, so a clean
+  three-strategy "Extract loci" group reads better. (d) **Drop per-page `set_page_config`, centralize
+  in the entry script** — unnecessary given additive calls are allowed; would touch all 12 pages for
+  no gain.
+- **Status:** active. Implemented 2026-06-23. `app.py` rewritten: `home()` callable + grouped
+  `st.navigation({...}, expanded=True)`; landing "Getting started" now points to Project Setup →
+  Workflow (the old copy referenced a non-existent "Loci Extraction" page), middle dashboard card
+  reframed to the three extraction strategies, IQ-TREE2 label → IQ-TREE. Smoke-tested with
+  `AppTest`: nav builds, all 13 `st.Page` paths resolve, Home renders, and every one of the 12
+  file-pages loads with no exception (additive `set_page_config` + `st.page_link` confirmed). Test
+  suite unchanged at **298 passing** (app.py is not unit-tested; verified via AppTest).

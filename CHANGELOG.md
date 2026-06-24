@@ -5,6 +5,16 @@
 
 ## 2026-06-23
 
+- **Phase-grouped sidebar navigation (D-031).** The sidebar was a flat 12-item list ordered only by
+  page-file number, which buried the **Workflow** checklist mid-pipeline and gave no sense of stages.
+  `app.py` now builds an explicit grouped `st.navigation`: **Set up** · **References (NCBI)** ·
+  **Extract loci** · **Tree prep** · **Phylogenomics & tree**, with **Home** and **Workflow** lifted
+  header-less to the top as the guided entry point. The landing dashboard + Tool Settings became the
+  `Home` page; its "Getting started" callout now points to Project Setup → Workflow (was a dead
+  "Loci Extraction" reference) and the middle card describes the three extraction strategies. No page
+  files were renamed or moved; each page keeps its own `set_page_config` (additive in Streamlit ≥1.58)
+  and the Workflow page's `st.page_link` paths still resolve. `AppTest`-verified: nav builds, all 13
+  pages load, no exceptions; 298 tests unchanged.
 - **Auto-escalating boundary refinement + loud write-and-flag (D-030).** The RPB2 frameshift in the
   *A.* aff. *eureka* strains is a tool artifact, not the genome (assembled DNA is ~99.9% identical to
   clean strains — 3 substitutions, **zero indels** — but Exonerate misplaces a splice boundary).

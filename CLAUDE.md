@@ -59,7 +59,7 @@ phylofetch/
 │   ├── codon_prep_utils.py # tips → frame-consistent CDS + full-gene + protein (D-022); nucleotide fallback for intronic barcodes (D-027)
 │   ├── taxon_id_utils.py  # ITS→remote BLAST provisional taxon ID (D-014)
 │   └── tips_utils.py      # tip import + locus auto-classify (D-020); accession normalize + per-accession assign (D-026)
-├── pages/                 # Streamlit multi-page app (component-page workflow, D-012)
+├── pages/                 # Streamlit multi-page app (component-page workflow, D-012; phase-grouped via st.navigation in app.py, D-031)
 │   ├── 0_Project_Setup.py
 │   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
 │   ├── 2_NCBI_References.py     # optional taxon-closer guides, coding-only, RefSeq + length-aware candidate picker (D-023, D-024, D-025)
@@ -82,7 +82,7 @@ phylofetch/
 │   ├── test_exonerate_utils.py   # parser/QC/build offline + binary-guarded E2E (D-008)
 │   ├── test_codon_prep_utils.py  # soft-mask/merge offline + binary-guarded E2E (D-022)
 │   └── fixtures/                 # verbatim exonerate 2.4.0 output + synthetic gene
-├── app.py                 # streamlit run app.py
+├── app.py                 # streamlit run app.py — Home page + explicit phase-grouped st.navigation (D-031)
 ├── pyproject.toml
 └── environment.yml
 ```
