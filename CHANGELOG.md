@@ -5,6 +5,36 @@
 
 ## 2026-06-23
 
+- **Architecture audit fixes — Tier 1 (D-032 / D-033 / D-034).** A multi-reviewer audit after the
+  recent D-025→D-031 run surfaced integration seams that could silently corrupt results; fixed the
+  high-impact set:
+  - **Comparison tips no longer silently dropped (D-032).** Alignment Prep now defaults to the
+    `with_tips/` matrices (isolates + framed reference taxa) when they exist — the old default of
+    `combined/` (isolates only), which shares the identical `*_combined.fasta` filenames, quietly left
+    your imported tips out of the tree.
+  - **Codon partitions actually reach IQ-TREE (D-032).** Replaced the broken `codon_part_dir`
+    stem-matching (which pointed at per-strain `*_partition.nex` files that never left
+    `per_strain/…` and encoded the *unaligned* length) with a "Codon-partition CDS loci" checkbox that
+    derives 1st/2nd/3rd-position charsets from the **aligned** supermatrix length — the correct,
+    frame-aware method (valid for codon-aware/MACSE alignment, as the page already advises).
+  - **IQ-TREE run history shows up (D-032).** The Tree page filtered `module=="iqtree2"` but runs log
+    `module="iqtree"` → history was always empty; corrected.
+  - **Locus-selecting BLASTs are now logged + bounded (D-033).** The contig-narrowing, relaxed-amplicon,
+    and tip-orientation BLASTs route through RunManager (command + version recorded — the project's
+    reproducibility promise) and carry timeouts; ITSx/Exonerate/blastn-short gained timeouts + launch
+    guards so a wedged or missing binary returns a non-zero rc instead of hanging or crashing. A
+    narrowing-BLAST *error* (vs. a real no-hit) is now flagged in the status rather than silently
+    falling back to slower, paralog-prone whole-assembly Exonerate.
+  - **NCBI calls retry instead of failing as "0 hits" (D-034).** Every Entrez call now throttles,
+    retries transient failures with backoff, and raises a typed `NCBIError` on exhaustion (so a
+    network blip can't masquerade as a genuine empty result); `ncbi_search_count` raises rather than
+    returning 0 and `fetch_record_with_meta` raises rather than a false "not found". Added
+    `NCBI_API_KEY` support. *(Correction to the audit framing: the live references preview uses the
+    local `count_refs`, so the "0 references" risk was latent — the hardening fixes the real fetch
+    surface regardless.)*
+  - **Tests:** +29 (327 total) — aligned-length codon partitions, BLAST runner provenance/timeout,
+    NCBI retry/transport, and a new `AppTest` smoke test covering app.py + all 12 pages (closes the
+    "navigation untested" gap). Deferred Tier-2/3 audit items recorded in `PLANNING.md`.
 - **Phase-grouped sidebar navigation (D-031).** The sidebar was a flat 12-item list ordered only by
   page-file number, which buried the **Workflow** checklist mid-pipeline and gave no sense of stages.
   `app.py` now builds an explicit grouped `st.navigation`: **Set up** · **References (NCBI)** ·

@@ -256,6 +256,39 @@ Recorded so we don't lose them; each maps to a roadmap item above.
   for deeper comparisons. Concatenation-only ignores ILS (high near speciation). → RM-004.
 - **(coverage) No tests for `concat.py`, `busco_utils.py`, `ncbi_utils.py`** — the
   partition-offset math and occupancy filtering are silent-error-prone.
+  - _(2026-06-23) — partially addressed:_ `concat.py` codon-partition path now tested
+    (`test_concat.py`, D-032) and `ncbi_utils` transport/retry tested (`test_ncbi_retry.py`,
+    D-034). `busco_utils.py` occupancy filtering still untested.
+
+## Known issues — 2026-06-23 architecture audit (Tier-2/3 deferred)
+
+A four-reviewer audit after the D-025→D-031 run fixed the high-impact items (D-032/D-033/D-034).
+These confirmed-but-lower-severity findings were deliberately deferred and must not be lost:
+
+- **(robustness) "Tool failed" conflated with "no result"** in `_run_blastn_short` (and the
+  primer/relabel paths): a blastn crash returns `[]`, indistinguishable from a real "no binding
+  sites" — a false-negative locus reads as a true biological negative. Distinguish rc≠0 from an
+  empty parse. (audit M-4)
+- **(robustness) Shared fixed-name scratch files** (`blast_hsps.tsv`, `_exonerate_target.fasta`)
+  in the per-locus `output_dir` aren't namespaced/cleared before reuse — the LXD-001 stale-file
+  class; only ITSx clears stale outputs. Namespace via `tempfile` or clear at runner entry. (H-5)
+- **(robustness) `parse_exonerate_gff` `%tcs` truncates on IUPAC codes** → a spurious QC
+  cross-check "mismatch" (the CDS itself is correct). Loosen the accept-set; treat empty `tcs`
+  as "cross-check unavailable". (H-4)
+- **(robustness) `_orig_contig` `__c` strip isn't anchored** — a contig name containing `__c`
+  silently disables its coverage filter; fix `re.sub(r"__c\d+$", "", contig)`. (src H-2)
+- **(clarity) nt-fallback row status** can't distinguish "no orientation reference available"
+  from "wrong locus / contamination" when `include_isolates=False`; and **library-mode** skips a
+  locus entirely if the length filter drops all its refs. Make both reasons explicit. (src M-1/M-2)
+- **(housekeeping) Dead/unwired config:** `output_base` (written in Tool Settings, never read),
+  orphaned manifest step `combine` (never written/read), and `exonerate`/`busco`/`compleasm`/
+  `datasets`/`iqtree3` paths not persistable via any UI. (audit L-1/L-2/L-3/L-4)
+- **(test depth) Multi-intron coordinate coverage:** `write_region_gff3` and the codon/soft-mask
+  paths are tested only on a 2-exon/1-intron synthetic gene; real RPB2/TEF1/RPB1 have several
+  introns. Add a ≥3-exon fixture. Also: `filter_records_by_length(include_user=True)` (the
+  production path) and `_relabel_itsx_output` dedup/mixed-cov are untested.
+- **(method, pre-existing) ITSx still over-extends LSU to the contig end** on the tandem array
+  (separate from the D-028 coverage filter) — a length-cap concern, not built.
 
 ## Done (high-level milestones)
 

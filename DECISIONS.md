@@ -950,3 +950,89 @@ Format for each entry:
   `AppTest`: nav builds, all 13 `st.Page` paths resolve, Home renders, and every one of the 12
   file-pages loads with no exception (additive `set_page_config` + `st.page_link` confirmed). Test
   suite unchanged at **298 passing** (app.py is not unit-tested; verified via AppTest).
+
+### D-032 (2026-06-23) — Tree-prep integration fixes: with_tips default, aligned-length codon partitions, IQ-TREE history
+- **Decision:** Three fixes to the extraction→tree handoff, surfaced by a post-D-031 architecture
+  audit. (1) **Alignment Prep defaults to `with_tips/`** when framed comparison tips exist (else
+  `combined/`): the two dirs share the exact `*_combined.fasta` filenames, so the old hard default of
+  `combined/` (isolates only) silently dropped the imported reference taxa from the tree. A caption
+  states which set is in use. (2) **Codon partitions are derived from the *aligned* supermatrix
+  length at concat time** (`concatenate_alignments(codon_loci=[...])` →
+  `_write_aligned_codon_partitions`), gated by a "Codon-partition CDS loci" checkbox that flags loci
+  whose filename contains `_CDS`. This replaces the broken `codon_part_dir` text input, which
+  stem-matched `{locus}_CDS_combined_partition.nex` against per-strain `{locus}_partition.nex` files
+  that were never carried out of `per_strain/<strain>/<locus>/` — so codon partitions never reached
+  IQ-TREE, and even if found encoded the *unaligned* `cds_length`. (3) **IQ-TREE run history** on the
+  Tree page filtered `module=="iqtree2"` but runs log `module="iqtree"` (D-031 generic, since the
+  binary may be iqtree3) → history was always empty; filter corrected to `"iqtree"`.
+- **Why:** (1) and (2) silently corrupt scientific output — (1) drops the comparison taxa the whole
+  Reference-Taxa/Codon-Tip-Prep flow exists to add; (2) analyzes the CDS supermatrix *unpartitioned*
+  (wrong model, no codon-position rate heterogeneity). Deriving codon charsets from aligned columns is
+  the textbook method and is valid precisely when the CDS was aligned frame-preserving (codon-aware /
+  MACSE) — which the Alignment Prep guidance already recommends; the checkbox help repeats the caveat.
+- **Alternatives considered:** (a) **Carry a representative `{locus}_partition.nex` into `combined/`**
+  — rejected: each strain's unaligned `cds_length` differs and none match the aligned length, so a
+  copied file is wrong; aligned-length derivation is the correct primitive. (b) **Auto-detect CDS by
+  inspecting sequence** — rejected: filename `_CDS` is unambiguous (it's how Exonerate/Codon-Tip-Prep
+  name the matrices) and lets the user override via the checkbox. (c) **Keep `combined/` default, just
+  warn** — rejected: the failure (tips dropped) is too quiet to leave as the default.
+- **Status:** active. Implemented 2026-06-23. `alignment/concat.py` (`codon_loci` param +
+  `_write_aligned_codon_partitions`, legacy `codon_partition_files` kept), `pages/9_Alignment_Prep.py`
+  (with_tips default + codon checkbox), `pages/11_Tree_Visualization.py` (history filter). +6 concat
+  tests + a 13-case `AppTest` smoke test (app.py + every page). **327 passing.**
+
+### D-033 (2026-06-23) — BLAST/Exonerate/ITSx: RunManager provenance + timeouts + no silent fallbacks
+- **Decision:** (1) **`run_blast`/`run_blast_alignment` accept a `manager` (RunManager)** and route
+  through it (command + tool version logged) via a shared `_exec_blast` helper; the three call sites
+  that select a locus's contig — `extract_locus` (relaxed-BLAST amplicon), `extract_locus_exonerate`
+  narrowing, and `orient_amplicon` (D-027 tip orientation) — now pass the manager. (2) **Timeouts +
+  launch guards** on every bare subprocess: `run_blast`/`run_blast_alignment` (600 s), `run_exonerate`
+  (900 s), `_run_blastn_short` (600 s), `run_itsx` (3600 s); a timeout → rc 124, a missing/un-exec
+  binary → rc 127, both as a non-zero rc + message rather than a raise/hang. (3) **Narrowing-BLAST
+  failure is no longer silent** — `extract_locus_exonerate` appends a `[WARN: narrowing … failed …
+  ran Exonerate on whole assembly]` to the status when the narrowing BLAST errors (vs. a genuine
+  no-hit), so the slower, paralog-prone whole-assembly path is a visible decision.
+- **Why:** Reproducibility is the project's core promise (`project_manager.py`: "all subprocess calls
+  go through RunManager"), yet the BLAST that decides *which contig a locus comes from* left no
+  `command.json`/version record. Separately, the most-invoked external calls had no timeout, so a
+  wedged BLAST/ITSx could hang the Streamlit worker indefinitely, and a narrowing-BLAST *error* was
+  indistinguishable from "no hit", quietly downgrading to whole-assembly Exonerate.
+- **Alternatives considered:** (a) **Leave manager-less paths as-is** — rejected: the umbrella-app /
+  library embedding and tests use the manager-less branch; it must fail safe. (b) **Drop the locus on
+  narrowing error** — rejected (D-007/D-008 write-and-flag); flag and proceed. (c) **Default
+  `--refine full` everywhere** — unrelated; handled by D-030 escalation.
+- **Status:** active. Implemented 2026-06-23. `blast_loci_utils.py` (`_exec_blast`, `manager`/
+  `timeout` on both runners; `extract_locus(manager=…)`), `exonerate_utils.py` (narrowing passes
+  manager + `narrow_warning`; `run_exonerate(timeout=…)` guarded), `codon_prep_utils.py`
+  (`orient_amplicon(manager=…)`), `primer_utils.py` + `itsx_utils.py` (timeout + launch guard),
+  `pages/4_Exonerate.py` (relaxed-BLAST passes manager). +6 runner tests. **327 passing.** NB:
+  `orient_amplicon` already used a private `TemporaryDirectory`, so it is collision-safe; the shared
+  `output_dir` scratch-file isolation (audit H-5) is **not** in this pass — see PLANNING.md.
+- **Scope note (deferred, documented):** the audit also flagged conflating "tool failed" vs "no
+  result" in `_run_blastn_short`/relabel (false-negative loci) and shared-scratch-file collisions —
+  deliberately left for a follow-up; recorded in PLANNING.md so they aren't lost.
+
+### D-034 (2026-06-23) — NCBI Entrez transport: throttle + retry + typed errors + API key
+- **Decision:** All Entrez calls (`_esearch_ids`, `_search_ncbi` esummary, `ncbi_search_count`,
+  `fetch_protein_by_accession`, `fetch_nucleotide_by_accession`, `fetch_record_with_meta`) route
+  through `_entrez_retry(thunk, what=…)`, which **throttles** to NCBI's rate limit (0.34 s
+  unauthenticated; 0.11 s with a key, centralizing the scattered `time.sleep(0.34)`), **retries**
+  transient failures (URL/HTTP/`HTTPException`/`OSError`/Bio's `RuntimeError`) with exponential
+  backoff, and on exhaustion raises a typed **`NCBIError`** the UI can distinguish from an honest
+  empty result. An `NCBI_API_KEY` (env at import, or `set_api_key`) raises the rate limit.
+- **Why:** Naked Entrez calls failed two ways: a transient blip either crashed a page or — if a caller
+  swallowed it — looked like a genuine "0 hits / not found", silently changing which references a
+  study uses. `ncbi_search_count` now **raises rather than returns 0** on failure; `fetch_record_with_meta`
+  **raises rather than returns `(None, None)`** (which `fetch_and_store` had logged as a permanent
+  "not found"). Correction to the audit framing: the live References preview uses the **local**
+  `count_refs` (`load_ref_records`), and `ncbi_search_count` is currently wired into tests only — so
+  the "0 references" risk was latent, not active; the hardening makes the search/fetch surface correct
+  regardless, which is where real fetches actually fail.
+- **Alternatives considered:** (a) **Catch-and-return-empty** — rejected: that *is* the bug (silent
+  wrong result). (b) **Harden only `ncbi_search_count`** — rejected: the real transient surface is the
+  fetch path (`fetch_record_with_meta`), so the helper is applied across search + simple fetches.
+  `fetch_and_store`'s per-accession isolation is retained (the audit credited it) and now sees a typed
+  error instead of a false empty.
+- **Status:** active. Implemented 2026-06-23. `ncbi_utils.py` (`NCBIError`, `_throttle`,
+  `_entrez_retry`, `set_api_key`, `NCBI_API_KEY` env pickup; six call sites wrapped, redundant sleeps
+  removed). +8 retry/transport tests. **327 passing.**
