@@ -346,7 +346,11 @@ def _run_blastn_short(
         except OSError:
             return []
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        # Wedged/missing blastn must not hang or crash the manager-less path (D-033).
+        return []
     if proc.returncode != 0:
         return []
     return _parse_blast_rows(proc.stdout)

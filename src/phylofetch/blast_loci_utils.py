@@ -70,12 +70,52 @@ _OUTFMT_FIELDS = [
 _OUTFMT_STR = "6 " + " ".join(_OUTFMT_FIELDS)
 
 
+def _exec_blast(cmd_parts: list, out_path: str, blast_bin: str, timeout: int,
+                manager, module: str, action: str,
+                inputs: dict) -> tuple[int, str, str]:
+    """
+    Execute a BLAST command, routing through RunManager when one is given so the command +
+    tool version are recorded (provenance — the project's core guarantee, D-033), else via a
+    guarded subprocess. A non-zero exit, a timeout, or a launch failure are all surfaced as
+    ``(rc != 0, stderr message, out_path)`` rather than raising or hanging (D-033).
+    """
+    version_key = "tblastn" if "tblastn" in os.path.basename(blast_bin) else "blastn"
+    if manager is not None:
+        rr = manager.run(
+            cmd_parts, module=module, action=action,
+            tool_version_keys=[version_key], inputs=inputs, timeout=timeout,
+        )
+        stderr = ""
+        if rr.stderr_path:
+            try:
+                stderr = Path(rr.stderr_path).read_text(encoding="utf-8")
+            except OSError:
+                pass
+        return rr.returncode, stderr, out_path
+    try:
+        result = subprocess.run(cmd_parts, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, f"{version_key} timed out after {timeout}s", out_path
+    except (FileNotFoundError, OSError) as exc:
+        return 127, f"{version_key} failed to launch: {exc}", out_path
+    return result.returncode, result.stderr, out_path
+
+
 def run_blast(query_fasta: str, target_fasta: str, output_dir: str,
               blast_bin: str = "blastn",
               task: Optional[str] = None,
               evalue: float = 1e-20,
-              threads: int = 4) -> tuple[int, str, str]:
-    """Run blastn or tblastn. Returns (returncode, stderr, tsv_path)."""
+              threads: int = 4,
+              timeout: int = 600,
+              manager=None,
+              module: str = "blast",
+              action: str = "blast_search") -> tuple[int, str, str]:
+    """Run blastn or tblastn. Returns (returncode, stderr, tsv_path).
+
+    ``manager`` (a RunManager) logs the command + tool version (D-033); ``timeout`` (seconds)
+    bounds the call so a wedged BLAST can't hang the app. Both default to safe behavior for
+    library/embedded callers.
+    """
     os.makedirs(output_dir, exist_ok=True)
     out_tsv = os.path.join(output_dir, "blast_hsps.tsv")
 
@@ -91,15 +131,19 @@ def run_blast(query_fasta: str, target_fasta: str, output_dir: str,
     if blast_bin == "blastn" and task:
         cmd_parts += ["-task", task]
 
-    result = subprocess.run(cmd_parts, capture_output=True, text=True)
-    return result.returncode, result.stderr, out_tsv
+    return _exec_blast(cmd_parts, out_tsv, blast_bin, timeout, manager, module, action,
+                       inputs={"query": query_fasta, "subject": target_fasta})
 
 
 def run_blast_alignment(query_fasta: str, target_fasta: str, output_dir: str,
                         blast_bin: str = "blastn",
                         task: Optional[str] = None,
                         evalue: float = 1e-20,
-                        threads: int = 4) -> tuple[int, str, str]:
+                        threads: int = 4,
+                        timeout: int = 600,
+                        manager=None,
+                        module: str = "blast",
+                        action: str = "blast_alignment") -> tuple[int, str, str]:
     """Run BLAST with standard pairwise alignment output (outfmt 0) for viewing."""
     os.makedirs(output_dir, exist_ok=True)
     out_txt = os.path.join(output_dir, "blast_alignment.txt")
@@ -116,8 +160,8 @@ def run_blast_alignment(query_fasta: str, target_fasta: str, output_dir: str,
     if blast_bin == "blastn" and task:
         cmd_parts += ["-task", task]
 
-    result = subprocess.run(cmd_parts, capture_output=True, text=True)
-    return result.returncode, result.stderr, out_txt
+    return _exec_blast(cmd_parts, out_txt, blast_bin, timeout, manager, module, action,
+                       inputs={"query": query_fasta, "subject": target_fasta})
 
 
 # ── HSP parsing ──────────────────────────────────────────────────────────────
@@ -581,6 +625,7 @@ def extract_locus(
     tblastn_bin: str = "tblastn",
     run_dir: str = "",
     require_complete_cds: bool = True,
+    manager=None,
 ) -> tuple[Optional[dict], str]:
     """
     Top-level locus extraction. Returns (result_dict_or_None, status_message).
@@ -590,6 +635,8 @@ def extract_locus(
     stitched CDS is shorter than ``min_cds_pct_of_ref`` of the reference. Set False
     for PCR-amplicon references (the usual NCBI nucleotide case), where partial /
     intron-containing matches are expected and the genomic amplicon output is used.
+    manager: optional RunManager — when given, the BLAST that selects the locus contig is
+    logged with command + tool version (provenance, D-033).
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -609,6 +656,7 @@ def extract_locus(
     rc, stderr, tsv = run_blast(
         reference_fasta, assembly_fasta, output_dir,
         blast_bin=blast_bin, task=task, evalue=evalue, threads=threads,
+        manager=manager, module="blast", action=f"extract_locus:{locus_name}",
     )
     if rc != 0:
         return None, f"BLAST failed (exit {rc}): {stderr.strip()[:200]}"

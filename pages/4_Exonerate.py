@@ -350,7 +350,8 @@ if st.button("🚀 Run extraction", type="primary", disabled=run_disabled):
             strain_id=strain_id, locus_name=locus, min_pident=float(min_pident),
             min_cds_pct_of_ref=float(min_cds_pct), evalue=evalue_float,
             blastn_task="dc-megablast", threads=int(threads), blastn_bin=blastn_bin,
-            tblastn_bin=tblastn_bin, run_dir=str(rr[1]), require_complete_cds=require_cds)
+            tblastn_bin=tblastn_bin, run_dir=str(rr[1]), require_complete_cds=require_cds,
+            manager=manager)
 
     flagged_notice: dict = {}   # locus -> [(ref_id, length, expected, flag)] dropped by D-025
     flagged_shown: set = set()

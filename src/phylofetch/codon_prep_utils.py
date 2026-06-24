@@ -196,6 +196,7 @@ def orient_amplicon(
     blastn_bin: str = "blastn",
     min_pident: float = 65.0,
     evalue: float = 1e-5,
+    manager=None,
 ) -> Optional[tuple[str, str, float, int]]:
     """
     blastn ``seq`` against ``orient_ref_fasta`` (the isolates' genomic locus) to BOTH confirm the
@@ -213,7 +214,9 @@ def orient_amplicon(
         q = os.path.join(scratch, "amplicon.fasta")
         SeqIO.write([SeqRecord(Seq(seq), id=seq_id, description="")], q, "fasta")
         rc, _err, tsv = run_blast(q, orient_ref_fasta, scratch,
-                                  blast_bin=blastn_bin, task="blastn", evalue=evalue)
+                                  blast_bin=blastn_bin, task="blastn", evalue=evalue,
+                                  manager=manager, module="blast",
+                                  action=f"orient_amplicon:{seq_id}")
         if rc != 0:
             return None
         hsps = [h for h in parse_blast_hsps(tsv) if h["pident"] >= min_pident]
@@ -367,7 +370,8 @@ def prepare_codon_locus(
                 # Could not codon-frame: keep it for the nucleotide (intron-inclusive) matrix
                 # if it orients to the isolate genomic — the intron-rich-barcode path (D-027).
                 if orient_ref:
-                    o = orient_amplicon(str(rec.seq), rec.id, orient_ref, blastn_bin=blastn_bin)
+                    o = orient_amplicon(str(rec.seq), rec.id, orient_ref,
+                                        blastn_bin=blastn_bin, manager=manager)
                     if o:
                         oriented, strand, pident, aln_len = o
                         nt = {"id": rec.id, "organism": organism, "genomic": oriented,

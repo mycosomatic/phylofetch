@@ -118,6 +118,7 @@ def run_exonerate(
     manager=None,
     module: str = "loci_extraction",
     action: str = "exonerate",
+    timeout: int = 900,
 ) -> tuple[int, str, str]:
     """
     Run Exonerate and return ``(returncode, raw_stdout_text, gff_path)``.
@@ -126,6 +127,8 @@ def run_exonerate(
     spurious giant introns, whereas fungal introns are typically 50-300 bp.
     When ``manager`` (a RunManager) is given the command is executed and logged
     through it (command + exonerate version captured in the run folder).
+    ``timeout`` (seconds) bounds the call so a wedged Exonerate can't hang the app;
+    a timeout or launch failure is surfaced as a non-zero rc, not an exception (D-033).
     """
     os.makedirs(output_dir, exist_ok=True)
     cmd = [
@@ -154,6 +157,7 @@ def run_exonerate(
             inputs={"query": query_fasta, "target": target_fasta},
             params={"model": model, "minintron": minintron, "maxintron": maxintron,
                     "bestn": bestn, "refine": refine, "geneticcode": geneticcode},
+            timeout=timeout,
         )
         try:
             raw = Path(rr.stdout_path).read_text(encoding="utf-8")
@@ -161,9 +165,14 @@ def run_exonerate(
             raw = ""
         rc = rr.returncode
     else:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        raw = proc.stdout or ""
-        rc = proc.returncode
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            raw = proc.stdout or ""
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            raw, rc = "", 124
+        except (FileNotFoundError, OSError):
+            raw, rc = "", 127
 
     # Save Exonerate's verbatim stdout for provenance/debugging — but as `.txt`, NOT `.gff`:
     # the raw output begins with `Command line: [...]` / `Hostname:` lines and is NOT valid GFF,
@@ -650,10 +659,12 @@ def extract_locus_exonerate(
     contig_seq_cache: dict[str, str] = {}
     narrowed = False
 
+    narrow_warning = ""
     if narrow and shutil.which(narrow_bin):
         rc, _stderr, tsv = run_blast(
             reference_fasta, assembly_fasta, output_dir,
             blast_bin=narrow_bin, task=None, evalue=evalue, threads=threads,
+            manager=manager, module="blast", action=f"narrow_locus:{locus_name}",
         )
         if rc == 0:
             best, ref_acc = select_best_locus_group(
@@ -667,6 +678,12 @@ def extract_locus_exonerate(
                     SeqIO.write([SeqRecord(Seq(contig_seq), id=contig_id,
                                            description="")], target_fasta, "fasta")
                     narrowed = True
+        else:
+            # Don't silently fall back: a BLAST *error* (vs. a genuine no-hit) means Exonerate
+            # runs on the WHOLE assembly — slower, and it can pick a paralog. Flag it so the
+            # riskier path is a visible decision, not a hidden one. (D-033)
+            narrow_warning = (f" [WARN: narrowing {narrow_bin} failed (exit {rc}) — "
+                              f"ran Exonerate on whole assembly]")
     # If narrowing produced nothing, target_fasta stays = whole assembly.
 
     # ── Steps 2-3: run Exonerate + build result, escalating boundary refinement when the CDS
@@ -752,4 +769,5 @@ def extract_locus_exonerate(
                   f"len % 3 = {result['len_mod3']})")
     if result.get("refine_escalated"):
         status += f" [boundary-refined: refine={used_refine}]"
+    status += narrow_warning
     return result, status

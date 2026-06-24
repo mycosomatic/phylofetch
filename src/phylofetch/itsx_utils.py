@@ -241,7 +241,14 @@ def run_itsx(
         "-t", kingdom,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return 1, "ERROR: ITSx timed out after 3600s", {}
+    except (FileNotFoundError, OSError) as exc:
+        # which() was checked above, but the binary can still fail to exec (perms, broken
+        # conda shim, missing hmmer/perl dep). run_itsx must always return its 3-tuple (D-033).
+        return 1, f"ERROR: ITSx failed to launch: {exc}", {}
     all_output = result.stdout + result.stderr
 
     # Always surface the last 40 lines so UI can show them on failure or success
