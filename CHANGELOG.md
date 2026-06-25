@@ -5,6 +5,17 @@
 
 ## 2026-06-24
 
+- **Exonerate now writes its authoritative `%tcs` CDS, not the coordinate rebuild (D-039).** A real
+  re-run threw alarming QC: RPB2 **40 internal stops**, TUB2 **19**, despite 98–99% protein identity.
+  The raw output proved the genome and the model were fine — Exonerate's own spliced CDS (`%tcs`) was
+  clean and in-frame; our coordinate rebuild was a few bp off at a **split-codon / intron-phase**
+  boundary, and a 2-bp slip frameshifts the whole CDS into dozens of bogus stops. `build_result_from_model`
+  now emits/QCs `%tcs` whenever Exonerate provides one (falling back to the rebuild only when it
+  doesn't), and records `cds_source` in the log. Loci that disagreed flip from REVIEW to PASS
+  (validated on the real data: RPB2 40→0, TUB2 19→0); loci that already agreed are byte-identical, so
+  a genuine single stop (S9 RPB1) is correctly still flagged. **Re-run the Exonerate step to
+  regenerate corrected CDS/protein files** — the deep-refine pass does not fix this, re-extraction
+  does. +1 mutation-verified regression test. **353 passing.**
 - **Second robustness review of the D-037 fixes (D-038).** A follow-up "try to break it" review +
   my own empirical re-verification (the reviewer sandboxes couldn't run code) confirmed and fixed:
   the orthology **core** no longer crashes on duplicate ids (the D-037 dedup only guarded the page

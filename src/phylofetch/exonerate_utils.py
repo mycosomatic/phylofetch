@@ -408,7 +408,17 @@ def build_result_from_model(
             "pident": model.get("pident", 0.0),
             "q_start": 0, "q_end": 0,
         })
-    cds_seq = "".join(cds_parts).upper()
+    cds_coord = "".join(cds_parts).upper()
+    # %tcs is Exonerate's authoritative spliced coding sequence (the RYO dump). The coordinate
+    # rebuild above can disagree by a few bp at a split-codon / intron-phase boundary —
+    # protein2genome trims the partial codon that straddles an intron, but the naive exon
+    # concatenation keeps those bases — and even a 2-bp slip cascades into a frameshift and dozens
+    # of bogus internal stops downstream (observed on real RPB2/TUB2 extractions: a 98.9%-identity
+    # model whose %tcs is clean and in-frame, written out as a 40-stop CDS). Trust %tcs whenever
+    # Exonerate provided one; fall back to the coordinate rebuild only when it didn't (D-039).
+    tcs = model.get("tcs", "")
+    cds_seq = tcs if tcs else cds_coord
+    cds_source = "tcs" if tcs else "coords"
 
     # Genomic gene span (exons + introns), soft-masked: exons UPPERCASE / introns lowercase so
     # the boundaries are visible for by-hand alignment (case is inert to aligners/tree tools).
@@ -444,6 +454,7 @@ def build_result_from_model(
         "amplicon_start": g_min,
         "amplicon_end": g_max,
         "cds_seq": cds_seq,
+        "cds_source": cds_source,
         "amplicon_seq": amplicon,
         "exons": exons,
         "introns": introns,
@@ -461,7 +472,7 @@ def build_result_from_model(
         "n_internal_stops": qc["n_internal_stops"],
         "len_mod3": qc["len_mod3"],
         "qc_clean": qc["clean"],
-        "tcs_matches": (model.get("tcs", "") == cds_seq) if model.get("tcs") else None,
+        "tcs_matches": (tcs == cds_coord) if tcs else None,
         "n_other_models": n_other_models,
     }
 
@@ -579,6 +590,8 @@ def write_exonerate_log(result: dict, output_dir: str,
         f"  strand        {result['strand']}",
         f"  n_exons       {result['n_exons']}",
         f"  cds_len       {result['cds_length']} bp",
+        f"  cds_source    {result.get('cds_source', 'coords')}"
+        f"{'  (Exonerate %tcs, authoritative)' if result.get('cds_source') == 'tcs' else '  (coordinate rebuild)'}",
         f"  amplicon_len  {result['amplicon_length']} bp",
         f"  n_introns     {result['n_introns']}",
         f"  splice_sites  {splice_note}",
