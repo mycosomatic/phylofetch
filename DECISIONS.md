@@ -1197,3 +1197,36 @@ Format for each entry:
   absent in this env). Deferred (PLANNING.md): deep-refine snapshot durability on a *hard kill*
   (re-runnable op, accepted), dedup `__dupN` re-collision (contrived), page's pre-run isolate/tip
   caption is pre-dedup (cosmetic), RNA `U`/`T` (matrices are DNA).
+
+### D-039 (2026-06-24) — Emit Exonerate's authoritative `%tcs`, not the coordinate rebuild
+- **Decision:** `build_result_from_model` now emits and QCs Exonerate's authoritative spliced coding
+  sequence (`%tcs`, from the `--ryo` dump) as the CDS whenever Exonerate provides one, falling back
+  to the coordinate rebuild only when it doesn't. Previously the CDS was **always** rebuilt by
+  concatenating the GFF `cds` feature spans (`cds_seq = "".join(cds_parts)`), and `%tcs` was used only
+  to *record* agreement (`tcs_matches`), never to override.
+- **Why:** On a real re-run (Alternaria_Final, bundled+library guides) many coding loci came back
+  `REVIEW` with alarming counts — RPB2 **40 internal stops / len%3=2**, TUB2 **19 / len%3=1** — while
+  their protein2genome alignments were 98.5–98.9% identical over ~100% coverage with canonical GT-AG
+  splices. Investigation of the raw output proved the genomic data and the model were fine: for the
+  selected model Exonerate's `%tcs` was clean and in-frame (RPB2 3879 bp / 0 stops; TUB2 1446 bp /
+  0 stops), but the coordinate rebuild was a few bp longer (RPB2 3881, TUB2 1453) and frameshifted.
+  The cause is **split-codon / intron-phase** handling: protein2genome trims the partial codon that
+  straddles an intron, but the naive exon-span concatenation keeps those bases, and even a 2-bp slip
+  cascades into a frameshift and dozens of bogus internal stops. `%tcs` is, by Exonerate's design,
+  the exact coding output and is already in coding orientation on either strand — so it is the
+  correct thing to write. This is a scientific-soundness fix: the prior CDS/protein files for any
+  locus with `tcs_crosscheck False` were wrong.
+- **Effect:** loci with `tcs_matches False` (the split-codon cases) flip from `REVIEW` to `PASS`; loci
+  with `tcs_matches True` are byte-identical to before (the rebuild already equalled `%tcs`), so a
+  genuine single internal stop — e.g. S9 RPB1, a real near-terminal substitution — is correctly left
+  as `REVIEW`. The per-locus log records `cds_source` (`tcs` authoritative vs `coords` rebuild) for
+  provenance. **Existing extractions must be re-run** to regenerate corrected CDS/protein files; the
+  deep-refine pass (D-035) does **not** fix this (same reconstruction) — re-extraction does.
+- **Status:** active. Implemented 2026-06-24. `exonerate_utils.py`
+  (`build_result_from_model` prefers `%tcs`; `cds_source` field; log line). +1 regression test
+  (`%tcs` clean vs frameshifted rebuild), mutation-verified; validated on the real RPB2/TUB2/RPB1 raw
+  outputs (40→0, 19→0 stops; RPB1 unchanged). Existing plus/minus/multi fixtures already had
+  `tcs == rebuild`, so all prior tests pass unchanged. **353 passing, 1 skipped.** Deferred
+  (PLANNING.md): for `tcs_matches False` loci the GFF3 exon model / soft-masked genomic boundaries are
+  still coordinate-derived and can be a few bp off at the one split-codon junction (cosmetic — the
+  CDS/protein/partition are correct; the genomic substrate for trees is unaffected).

@@ -198,6 +198,34 @@ class TestBuildResultFromModel:
         assert res["introns"][0]["splice_5"] == "GT"
         assert res["introns"][0]["splice_3"] == "AG"
 
+    def test_prefers_authoritative_tcs_over_frameshifted_coord_rebuild(self):
+        # D-039: protein2genome trims the split codon that straddles an intron, so its authoritative
+        # %tcs is in-frame — but the naive coordinate rebuild keeps those few bp and comes out
+        # frameshifted with bogus internal stops (observed on real RPB2/TUB2: a 98.9%-identity model
+        # whose %tcs is clean, written out as a 40-stop CDS). We must emit %tcs, not the rebuild.
+        clean = "ATGAAACCCGGGTTTAAACCCGGGTTTGGG"        # 30 bp, in frame, no stops
+        contig = clean + "GG"                            # +2 bp the rebuild wrongly keeps -> 32 bp
+
+        def _model(tcs):
+            return {"strand": "+", "cds": [(1, 32)], "exons": [], "introns": [],
+                    "gene_start": 1, "gene_end": 32, "query_len": 10, "q_aln_begin": 0,
+                    "q_aln_end": 10, "tcs": tcs, "model": "exonerate:protein2genome:local",
+                    "query_id": "REF1", "contig": "c1", "score": 100.0, "pident": 99.0}
+
+        # %tcs present and disagreeing with the rebuild -> emit the clean %tcs, flag the mismatch.
+        res = build_result_from_model(_model(clean), contig, "ST1", "RPB2")
+        assert res["cds_seq"] == clean
+        assert res["cds_source"] == "tcs"
+        assert res["tcs_matches"] is False
+        assert res["len_mod3"] == 0 and res["n_internal_stops"] == 0
+
+        # No %tcs (defensive fallback) -> the coordinate rebuild, which here is the frameshifted
+        # 32 bp -> proves the rebuild really was the broken sequence we were shipping before.
+        res2 = build_result_from_model(_model(""), contig, "ST1", "RPB2")
+        assert res2["cds_seq"] == contig.upper()
+        assert res2["cds_source"] == "coords"
+        assert res2["len_mod3"] == 2
+
     def test_protein_translation_present(self, contig_plus):
         models = parse_exonerate_gff(_fix("exo_protein2genome_plus.gff"))
         res = build_result_from_model(models[0], contig_plus, "ST1", "TEF1")

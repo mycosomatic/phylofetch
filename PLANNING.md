@@ -329,6 +329,14 @@ These confirmed-but-lower-severity findings were deliberately deferred and must 
 - **(low risk) Nucleotide p-distance treats RNA `U` vs DNA `T` as a mismatch.** Matrices here are
   DNA, so no real-world impact; note it if RNA tips are ever fetched.
 
+### Deferred from the %tcs CDS fix (2026-06-24, D-039)
+- **(cosmetic) For `tcs_matches False` loci the GFF3 exon model + soft-masked genomic boundaries are
+  still coordinate-derived** and can be a few bp off at the one split-codon junction where `%tcs` and
+  the rebuild disagree. The emitted CDS / protein / codon-partition are correct (from `%tcs`) and the
+  genomic substrate used for trees is unaffected; only the exon/intron *annotation* of the genomic
+  FASTA/GFF3 at that single junction is approximate. Reconcile the GFF exon spans to `%tcs` if precise
+  by-base intron annotation is ever needed.
+
 ## Done (high-level milestones)
 
 See `CHANGELOG.md` for the detailed, dated record. Recent shipped work (from git history):
