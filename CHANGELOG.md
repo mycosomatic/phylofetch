@@ -3,8 +3,371 @@
 > **Append-only.** Do not delete past entries. Newest at the top. This is the "what actually
 > changed" record. Rationale lives in `DECISIONS.md`; roadmap in `PLANNING.md`.
 
+## 2026-06-24
+
+- **Second robustness review of the D-037 fixes (D-038).** A follow-up "try to break it" review +
+  my own empirical re-verification (the reviewer sandboxes couldn't run code) confirmed and fixed:
+  the orthology **core** no longer crashes on duplicate ids (the D-037 dedup only guarded the page
+  path); the **NJ tree now uses the same low-overlap gate as the flag**, so a one-column noise
+  distance can't pull a partial amplicon misleadingly close in the tree the UI says to trust;
+  **"no outliers" is honest below 4 assessable sequences** (new `n_assessed` + a page notice, since
+  the robust test can't flag anything there); the **persisted Newick is clamped** so it never
+  carries NJ's tiny negative branches; and — most important scientifically — **Exonerate QC
+  re-validation now uses the genetic code the locus was extracted with** (recorded in the log), not
+  the live page widget, so a code change alone can't flip a clean CDS to flagged. **+8 tests, every
+  one mutation-verified** to fail when its fix is reverted; two D-037 tests that gave false
+  confidence (a "MAD>0" test that actually ran the MAD==0 branch; vacuous newick/tree-gate tests)
+  were corrected. **352 passing, 1 skipped** (app-smoke needs Streamlit, absent in this env).
+- **Pre-commit review fixes for D-035 / D-036 (D-037).** A four-agent review before committing
+  caught real defects; fixed: orthology p-distance now **excludes low-overlap pairs** (a partial
+  amplicon tip no longer fabricates a paralog) and is **alphabet-aware** (protein `N`=asparagine);
+  **duplicate ids** are de-duplicated with a warning instead of crashing the Biopython matrix (1.87
+  raises); the deep-refine pass is now **overwrite-safe** (snapshot + keep-only-if-strictly-cleaner,
+  with a "uses current settings" warning); `write_exonerate_log` actually writes `refine_used` (and
+  the test that *fabricated* it was replaced with a real round-trip); guide resolution gives a
+  gene-of-interest precedence over a same-named catalogue guide (no dir side effect); and the
+  Orthology page recovers loci by suffix-strip (not `split("_")[0]`, which hid underscore-named GOIs).
+  +15 tests incl. a median-vs-nearest-neighbour pin, protein-`N`, zero-overlap, and stub-MAFFT
+  id-preservation. **359 passing.**
+- **Orthology / paralog sanity check (D-036).** New **Orthology Check** page (between Codon Tip Prep
+  and Alignment Prep): per locus it aligns your isolates + imported amplicon tips (MAFFT), builds a
+  p-distance neighbour-joining tree, and flags **divergence outliers** — possible paralogs/artifacts.
+  It's **source-blind**: a published reference amplicon is judged exactly like an Exonerate
+  extraction (you can't know what QC the original authors did), with every row labelled isolate/tip.
+  The primary signal is median distance to all others (catches both a lone paralog and a paralog
+  *cluster*); the NJ tree is shown for the eye. Substrate selectable (genomic default / CDS /
+  protein); saves Newick + TSV to `results/orthology/`. Closes the long-planned orthology-vs-tips
+  item. +11 engine tests. **344 passing.**
+- **Exonerate refinement effort + on-demand deep-refine (D-035).** A real run with bundled
+  (taxon-divergent) guides appeared stuck — a single RPB2 strain ran >10 min because D-030 had
+  escalated to **`--refine full`**, which re-runs exhaustive DP over the whole 2.8 Mb narrowed contig
+  (minutes/strain), and divergent guides made nearly every strain escalate. Since `full` was verified
+  (D-030) to rescue nothing `region` didn't:
+  - **Auto-escalation now caps at `--refine region`** by default (`escalate_ceiling`), so extraction
+    stays fast; `full` is opt-in.
+  - The page gains a **Refinement effort** control — *Fast* / *Balanced* (default) / *Thorough*.
+  - New **Deep refinement** section: a stateless scan re-validates every extracted `LOCUS_CDS.fasta`,
+    lists the flagged (frameshift/internal-stop) ones, and runs **`--refine full` on just those** —
+    reusing the guides saved in `scratch/guides/`, keeping the cleaner result, and re-merging the
+    combined FASTAs. It reads disk, so it can be run **any time, including a later session** (e.g. if a
+    downstream tree looks off). +5 tests. **332 passing.**
+
+## 2026-06-23
+
+- **Architecture audit fixes — Tier 1 (D-032 / D-033 / D-034).** A multi-reviewer audit after the
+  recent D-025→D-031 run surfaced integration seams that could silently corrupt results; fixed the
+  high-impact set:
+  - **Comparison tips no longer silently dropped (D-032).** Alignment Prep now defaults to the
+    `with_tips/` matrices (isolates + framed reference taxa) when they exist — the old default of
+    `combined/` (isolates only), which shares the identical `*_combined.fasta` filenames, quietly left
+    your imported tips out of the tree.
+  - **Codon partitions actually reach IQ-TREE (D-032).** Replaced the broken `codon_part_dir`
+    stem-matching (which pointed at per-strain `*_partition.nex` files that never left
+    `per_strain/…` and encoded the *unaligned* length) with a "Codon-partition CDS loci" checkbox that
+    derives 1st/2nd/3rd-position charsets from the **aligned** supermatrix length — the correct,
+    frame-aware method (valid for codon-aware/MACSE alignment, as the page already advises).
+  - **IQ-TREE run history shows up (D-032).** The Tree page filtered `module=="iqtree2"` but runs log
+    `module="iqtree"` → history was always empty; corrected.
+  - **Locus-selecting BLASTs are now logged + bounded (D-033).** The contig-narrowing, relaxed-amplicon,
+    and tip-orientation BLASTs route through RunManager (command + version recorded — the project's
+    reproducibility promise) and carry timeouts; ITSx/Exonerate/blastn-short gained timeouts + launch
+    guards so a wedged or missing binary returns a non-zero rc instead of hanging or crashing. A
+    narrowing-BLAST *error* (vs. a real no-hit) is now flagged in the status rather than silently
+    falling back to slower, paralog-prone whole-assembly Exonerate.
+  - **NCBI calls retry instead of failing as "0 hits" (D-034).** Every Entrez call now throttles,
+    retries transient failures with backoff, and raises a typed `NCBIError` on exhaustion (so a
+    network blip can't masquerade as a genuine empty result); `ncbi_search_count` raises rather than
+    returning 0 and `fetch_record_with_meta` raises rather than a false "not found". Added
+    `NCBI_API_KEY` support. *(Correction to the audit framing: the live references preview uses the
+    local `count_refs`, so the "0 references" risk was latent — the hardening fixes the real fetch
+    surface regardless.)*
+  - **Tests:** +29 (327 total) — aligned-length codon partitions, BLAST runner provenance/timeout,
+    NCBI retry/transport, and a new `AppTest` smoke test covering app.py + all 12 pages (closes the
+    "navigation untested" gap). Deferred Tier-2/3 audit items recorded in `PLANNING.md`.
+- **Phase-grouped sidebar navigation (D-031).** The sidebar was a flat 12-item list ordered only by
+  page-file number, which buried the **Workflow** checklist mid-pipeline and gave no sense of stages.
+  `app.py` now builds an explicit grouped `st.navigation`: **Set up** · **References (NCBI)** ·
+  **Extract loci** · **Tree prep** · **Phylogenomics & tree**, with **Home** and **Workflow** lifted
+  header-less to the top as the guided entry point. The landing dashboard + Tool Settings became the
+  `Home` page; its "Getting started" callout now points to Project Setup → Workflow (was a dead
+  "Loci Extraction" reference) and the middle card describes the three extraction strategies. No page
+  files were renamed or moved; each page keeps its own `set_page_config` (additive in Streamlit ≥1.58)
+  and the Workflow page's `st.page_link` paths still resolve. `AppTest`-verified: nav builds, all 13
+  pages load, no exceptions; 298 tests unchanged.
+- **Auto-escalating boundary refinement + loud write-and-flag (D-030).** The RPB2 frameshift in the
+  *A.* aff. *eureka* strains is a tool artifact, not the genome (assembled DNA is ~99.9% identical to
+  clean strains — 3 substitutions, **zero indels** — but Exonerate misplaces a splice boundary).
+  Extraction now **auto-escalates `--refine`** (none → region → full) when a CDS comes out
+  frameshifted and keeps the cleanest — recovering 3 of the 4 affected strains automatically
+  (S11-3-B4: 42 stops → 0) while the clean path stays a single fast pass. The genuinely-stuck S9 stays
+  **written-and-flagged**, never dropped. The Exonerate page gained a **persistent QC summary**
+  (PASS/REVIEW/DROPPED/FAILED + an expanded attention table), so flagged/dropped strains never
+  silently vanish; a Strict-QC drop is called out. +4 tests.
+- **Geneious-importable GFF (D-029).** Importing `exonerate.gff` into Geneious failed (*"Expected a
+  number. Found: …'--model'"*) — that file is Exonerate's raw stdout, which starts with
+  `Command line: [exonerate --model …]` and isn't valid GFF. It's now saved as **`exonerate_raw.txt`**
+  (a tool log, not for import). And because the clean `LOCUS.gff3` is *contig*-relative (won't land on
+  the extracted gene), extraction now also writes a **region-relative `LOCUS_genomic.gff3`** that
+  matches `LOCUS_genomic.fasta` — load that pair in Geneious/IGV for an exon/intron/CDS track on the
+  extracted gene. Verified the region GFF exon ranges equal the soft-masked uppercase runs on both
+  strands. +3 tests.
+- **rDNA: prefer the high-coverage array, drop off-array/RIP'd copies (D-028).** ITSx made spurious
+  detections on chromosomal contigs — a 90 kb chunk of the 6.9 Mb NODE_1 (45×) gave a **60 kb "SSU"**
+  while the true SSU sat on the rDNA repeat contig (1193×). The wrapper now keeps only the
+  highest-coverage contig's detection per region (within 5×) and drops the rest. Coverage is
+  biologically meaningful: the functional rDNA is a high-copy array, so a single-copy (chromosomal)
+  detection is an off-array copy that may be RIP-pseudogenized. `parse_coverage`, coverage filter in
+  `run_itsx` (`prefer_high_cov`, default on) + `[cov=]` header tag + ITSx-page toggle; dropped copies
+  listed in the run log. +5 tests. (Known remaining: ITSx still extends LSU to the contig end on the
+  tandem-repeat array — a separate length-cap concern.)
+- **IQ-TREE binary auto-detect (prefers iqtree3).** The Tree page hard-coded `iqtree2`; it now
+  resolves the binary from config tool-paths or auto-detects from PATH preferring the newest
+  (`iqtree3` ▸ `iqtree2` ▸ `iqtree`), with an editable field + tool-check. IQ-TREE 3 is CLI-compatible
+  for the flags used (-s/-p/-m/-B/-T/--prefix). Labels/provenance module generalized to "IQ-TREE";
+  `environment.yml` pin kept as the reproducible fallback. (`pages/11_Tree_Visualization.py`.)
+- **Length-aware reference picker (D-025 follow-up).** The References-page candidate picker was
+  still "RefSeq + longest first" — so it pre-ticked the over-long mis-annotated refs the D-025 filter
+  then drops (TEF1: auto-selected the 814/812-aa models, skipped the correct 457-aa EF1-α). Now
+  protein candidates sort RefSeq → in-band → closest-to-guide-length, a **"vs guide"** column flags
+  outliers (`⚠ long/short (~exp)`), and only length-appropriate refs are pre-ticked. Picker and
+  extraction filter now agree. (`pages/2_NCBI_References.py`.)
+- **Nucleotide fallback for intron-rich barcode tips — Codon Tip Prep (D-027).** Diagnosed why all
+  25 TEF1 comparison tips produced an isolates-only matrix: the standard fungal TEF1 barcode
+  (EF1-728F/986R, ~240 bp) is largely **intronic** — a tip matches the isolate *genomic* gene
+  continuously (86%) but has **no hit against the intron-stripped CDS**, so `protein2genome` finds no
+  model (0/25 framed vs 24/24 for the longer, exon-rich RPB2 amplicons), even with a near-identical
+  *Alternaria* guide.
+  - `codon_prep_utils`: `orient_amplicon` (blastn the tip vs the isolate genomic → confirm locus +
+    orient strand); `prepare_codon_locus` gains `blastn_bin` / `nt_fallback` / `n_nt_only` and, for
+    un-framable tips that orient, writes them to the **genomic** matrix only, flagged
+    `[framed=no] [nucleotide_only=yes]`. CDS/protein stay isolate-only for that locus; a tip that
+    orients to nothing is reported, not included.
+  - `pages/8_Codon_Tip_Prep.py`: nucleotide-fallback toggle, blastn tool-check, "Nucleotide-only"
+    overview column + per-tip product/strand detail.
+  - Verified on the project's TEF1 tips: genomic matrix 7 → 32 (7 isolates + 25 oriented tips). The
+    published TEF1 phylogenies align introns too, so this is the right output for these markers. +6
+    tests → **286 passing** (was 280).
+
+- **Guide-length sanity filter — reject mis-annotated over-long references (D-025).** A real run
+  (project *Alternaria_Final*) produced **TEF1 813 aa** (EF1-α ≈ 460) and **TUB2 864 aa**
+  (β-tubulin ≈ 447) CDS, with 5/7 strains frameshifted. Root cause: in "Bundled + project
+  (taxon-closer)" mode the fetched Alternaria RefSeq proteins out-scored the correct-length guides,
+  and some are mis-annotated — `XP_038787078.1` is "beta-tubulin, **partial**" yet **865 aa**. The
+  frame/stop QC (D-008) can't catch an in-frame CDS from a bad ref (TEF1 had 0 stops).
+  - `protein_guide_utils`: `expected_length` (median bundled-guide length, the trusted anchor),
+    `length_flag`, `filter_records_by_length` → `(kept, dropped)`; `LENGTH_TOLERANCE = 0.30`.
+  - `pages/4_Exonerate.py`: the filter is applied to project refs layered on in "both" mode (and to
+    a protein "library"); dropped refs are shown inline + pre-counted in the locus picker, with a
+    **"Keep length-flagged refs anyway"** opt-out and the state logged to the manifest. Bundled
+    guides always remain, so a locus is never left without a query.
+  - **Verified end to end:** with the filter, TUB2 → **482 aa, 0 stops** (kept the 483-aa *A. atra*
+    ref), TEF1 → **456 aa, 0 stops** (bundled 460-aa guide); the 865/812/814-aa refs dropped, the
+    mildly-long RPB2 refs (≈1290) correctly kept. +6 tests.
+- **Per-accession tip import — normalize, assign per row, warn on failure (D-026).** Reworked the
+  Reference Taxa / Tips import after two user reports: `NR_135944` pasted as `NR135944` silently
+  failed (works as a URL, not for Entrez/BLAST), and the page could only bulk-assign all
+  unclassified accessions to **one** locus.
+  - `tips_utils`: `normalize_accession` repairs bare RefSeq ids (`NR135944` → `NR_135944`) on a
+    known-prefix anchor (GenBank ids untouched); `lookup_accessions` returns per-accession
+    `input/accession/title/found/locus_guess`; `_esummary_titles` falls back to per-id calls so one
+    bad id can't sink the batch; `import_tips_with_assignments` stores each accession under the
+    user-chosen locus.
+  - `pages/7_Reference_Taxa.py`: paste → **look up on NCBI** → a per-row editor (locus selectbox
+    pre-filled with the auto-guess, title + nuccore link shown) → import; accessions that don't
+    resolve are surfaced as an explicit warning. +3 tests.
+- Full suite **280 passing** (was 271).
+
+## 2026-06-22
+
+- **Fix junk protein references — RefSeq-restricted + candidate picker (D-024).** The References
+  page was fetching garbage (a **5-aa "TEF1"** for *Alternaria eureka*): the per-locus taxon
+  fallback stopped at the exact novel species because it had one hit (the 5-aa fragment), never
+  reaching the genus, and there was no quality filter.
+  - `ncbi_utils`: restrict protein refs to **RefSeq genome-annotated** proteins via
+    `srcdb_refseq[prop]` (`refseq_only` param on `search_ncbi_protein` / `ncbi_search_count`).
+    Verified live that `refseq[filter]` does **not** work (0 hits) but `srcdb_refseq[prop]` does;
+    parse the organism from the protein title (`...[Organism]`) since protein esummary leaves
+    `Organism` empty.
+  - `pages/2_NCBI_References.py`: blind auto-fetch-top-N → a **candidate picker** (per-candidate
+    checkboxes: accession · organism · length · RefSeq; sorted RefSeq + longest first; top **2**
+    pre-ticked, not 15), a **RefSeq-only checkbox** (default on, relaxable), a **min-length** guard,
+    and the legacy **Type-material toggle removed** (a comparison-tips concern, D-007).
+  - **Live-verified end to end:** *Alternaria eureka* → 0 RefSeq → falls back to genus; *Alternaria*
+    → 3 clean full-length RefSeq TEF1 (457–814 aa; *A. arborescens/rosae/burnsii*). Of 4172
+    *Alternaria* "TEF1 protein" records, only 3 are RefSeq.
+  - Tests: +3 → **271 passing** (was 268). Page stub-render-verified (picker rows, RefSeq ordering,
+    pre-ticks).
+
+- **NCBI References repurposed — taxon-closer guide supplement, coding-only (D-023).** Since the
+  bundled universal protein guides (D-020) are the default extraction source, the References page
+  is now optional and reframed to fetch **taxon-closer protein** orthologs that *supplement* the
+  bundled core (plus nucleotide refs for the relaxed-BLAST path).
+  - `pages/4_Exonerate.py`: new third reference source **"Bundled guides + project library
+    (taxon-closer)"** — merges the bundled Asco/Basidio guides with the project's fetched
+    **protein** refs into one `protein2genome` query (Exonerate keeps the best-scoring model;
+    bundled stays the floor). Only protein project refs are layered in; a nucleotide library falls
+    through to bundled-only. Per-locus augmentation count shown in the loci picker.
+  - `protein_guide_utils.write_guide_fasta` gains `extra_records` (appended after bundled guides).
+  - `pages/2_NCBI_References.py`: reframed wording; **rDNA (ITS/LSU/SSU) removed** — ITSx extracts
+    rDNA and rDNA comparison is imported as tips on the Reference Taxa page. Coding loci only;
+    Protein default + Nucleotide retained.
+  - Scientific note (clarified with the user): a taxon-closer guide improves amino-acid alignment
+    confidence/sensitivity but does **not** change intron finding — `protein2genome` locates
+    introns in the *target* (the protein guide is intron-free), so lineage-variable intron
+    structure is handled per-sequence. Intron-structure hand-checking routes through tips (the
+    D-022 soft-masked genomic), not guides.
+  - Tests: +2 (`write_guide_fasta` extra_records) → **268 passing** (was 266). Both pages
+    stub-render-verified.
+
+- **Codon Tip Prep — frame comparison tips into codon-ready CDS (D-022 / RM-008 component 2).**
+  The "manual-Mesquite step", automated. New single-purpose page `pages/8_Codon_Tip_Prep.py` +
+  `src/phylofetch/codon_prep_utils.py`: each coding-locus comparison tip (imported on Reference
+  Taxa) is run through the **same bundled protein guide** as extraction (Exonerate
+  `protein2genome`) — introns stripped, reading frame pinned to the guide ORF, strand oriented —
+  then **merged with the user's extracted isolate loci** into three per-locus matrices in
+  `<output>/loci/with_tips/`:
+  - `<locus>_CDS_combined.fasta` — intron-stripped, **codon-phased** CDS;
+  - `<locus>_genomic_combined.fasta` — the **full gene** (exons + introns, oriented), written
+    **exons UPPERCASE / introns lowercase** so exon-intron boundaries stay visible — and track the
+    sequence as gaps are inserted — during by-hand alignment (case is inert to MAFFT/MACSE/trimAl/
+    IQ-TREE; bases unchanged). The masking is centralized in new `exonerate_utils.soft_mask_genomic`
+    (called by `build_result_from_model`), so the **Exonerate *extraction* path now also writes
+    soft-masked genomic** — the user's own loci (`<locus>_genomic.fasta`) and the reference tips
+    are annotated identically (per user request for homogeneity; verified plus/minus). Optional
+    toggle alternates exon case in the CDS to mark junctions too;
+  - `<locus>_protein_combined.fasta` — the translation (AA tree / hand-align guide).
+  References are treated **exactly as the user's own sequences** (raw full gene **and** CDS). The
+  page **runs no aligner and adds no dependency** beyond Exonerate; alignment + codon-structure
+  curation stay on Alignment Prep, with a clear caveat that a plain nucleotide aligner does **not**
+  preserve reading frame — use a codon-aware aligner (MACSE if its JAR is installed) **or** hand-
+  align (AliView / SeaView / Geneious as optional companions, never required). rDNA tips
+  (ITS/LSU/SSU) are non-coding → skip this step (straight to MAFFT). QC is **write-and-flag**
+  (`strict_qc` excludes frameshift / internal-stop tips); a tip that can't be aligned to the guide
+  is reported, not dropped. Provenance → new manifest step `workflow.steps.codon_prep` (added to
+  `WORKFLOW_STEPS`; Workflow page chains it after coding). **Analysis pages renumbered:**
+  Alignment Prep → **9**, BUSCO → **10**, Tree → **11**. No new science — reuses the tested
+  Exonerate primitives. Tests: 16 (`tests/test_codon_prep_utils.py` — offline rendering/
+  orchestration + an exonerate-binary-guarded end-to-end) → **266 passing** (was 250). Page
+  render-verified (executes top-to-bottom against a streamlit stub; AppTest env not present in this
+  checkout).
+
+## 2026-06-21
+
+- **Reference Taxa / Tips page (D-020 / RM-008 component 3).** New `pages/7_Reference_Taxa.py`
+  + `tips_utils.py`: paste a flat, mixed list of GenBank accessions → each is **auto-classified
+  to its locus** (`classify_locus`, via the D-011 synonym catalogue) → fetched and stored as tips
+  in a **separate per-project store** `<project>/tips/<locus>/` (reuses the per-locus library
+  helpers with a tips `ref_dir`; never mixed with protein guides, cf. D-018). Unassigned
+  accessions surface for one-click manual assignment; per-locus review table (NCBI links) for
+  culling. Analysis pages renumbered (**Alignment 8 · BUSCO 9 · Tree 10**); Workflow links
+  updated. Target-taxa search mode deferred (RM-008). Tests: 6 (classifier) → **250 passing**.
+- **Configurable per-project output directory (D-021).** Extraction/alignment artifacts write
+  under a configurable root — default `<project>/results`, overridable via the manifest
+  `output_dir`. New `project_manager.project_output_dir` / `set_output_dir`; the ITSx / Exonerate
+  / Primers / Workflow pages write to `<output_dir>/loci`, **Alignment Prep defaults its input to
+  the same place** (unifying extraction output with alignment input, fixing the D-015 path
+  mismatch), and Project Setup → Manage Data has an "Output directory" field. All outputs are
+  plain files, portable to downstream tools. Tests: 4 new → **244 passing**.
+- **Bundled protein guide set — universal core (D-020 / RM-008 component 1).** Ships
+  `src/phylofetch/data/protein_guides.json`: full-length **RefSeq** protein orthologs for the 8
+  conserved coding markers (RPB1/RPB2/TEF1/TUB2/ACT/GAPDH/CAL/HIS3), **one Ascomycota + one
+  Basidiomycota each** (16 guides; provenance = accession/organism/clade/length). New
+  `protein_guide_utils.py` — `load_protein_guides` / `guide_loci` / `get_guides` /
+  `write_guide_fasta`, with user **lineage packs** at `~/.phylofetch/protein_guides.json` merged
+  on top. `pages/4_Exonerate.py` gains a **Reference source** toggle (Bundled guides, default →
+  no fetching | Project library); bundled guides run protein2genome. **Verified end-to-end:**
+  bundled Penicillium+Desarmillaria RPB2 guides extract a clean **0-stop, 3606 bp** RPB2 CDS
+  from a real *Alternaria* assembly (TEF1 likewise, 0 stops) — confirms kingdom-wide guides.
+  Tests: 10 new (`tests/test_protein_guide_utils.py`: data integrity, loader, lineage-pack
+  merge) → **240 passing**.
+- **Escalating edit-distance in-silico PCR search (D-019).** Primer search now escalates the
+  per-primer edit-distance threshold strict→loose up to a cap, instead of one fixed threshold —
+  so a related species' primers in a divergent genome (e.g. *A.* aff. *eureka*) still bind
+  without manual slider-bumping, while a clean match isn't loosened needlessly.
+  - `primer_utils`: new `find_primer_amplicons_escalating` (returns `(candidates, used_mm)`);
+    `run_primer_extraction` gains `escalate_to`.
+  - `pages/5_Primers.py`: the slider is now the **cap** (default 3, auto-escalates from 2); the
+    binding-site preview shows the matched edit distance.
+  - Confirmed in-code (user questions): the search already (a) checks **both strands /
+    orientations** (fwd+rev on opposite strands, either amplicon strand) and (b) **expands
+    degenerate primers** to all concrete oligos before searching (D-009).
+  - Tests: `TestEscalatingSearch` (+4) → **230 passing**.
+
 ## 2026-06-20
 
+- **In-app project/cache management + mixed-reference-type guard (D-018).**
+  - `project_manager`: new guarded helpers `project_data_summary`, `clear_project_data`
+    (references/results/runs/scratch/logs), `reset_workflow`, `delete_project` (refuses
+    non-projects + protected dirs), `clear_global_reference_cache`. +8 tests.
+  - `pages/0_Project_Setup.py`: new **Manage Data** tab — cache summary (counts + sizes) and
+    buttons (behind a confirm) to clear references / results / run-logs / workflow, clear all
+    assemblies, clear the global cache, and delete the project (type-name confirm). Lets you
+    start a project from scratch for new assemblies.
+  - `pages/2_NCBI_References.py`: **reference-type mismatch guard** — fetching a type
+    (protein/nucleotide) that differs from a locus's existing refs is **skipped with a warning**
+    (preview + fetch) so protein and nucleotide never mix in one locus file (which would break
+    Exonerate model selection). Verified the guard fires on the real project.
+  - **226 passing** (was 218).
+- **Protein references for coding loci + taxon fallback (D-017).** Diagnosed that Exonerate
+  internal stops in barcoding genes were a **reference artifact, not a bad assembly** (BUSCO is
+  excellent; the same assembly gave a clean 0-stop ACT CDS from a full-length *A. dauci* protein
+  ref — 15→0 stops). Root cause: D-011 fetches partial-cds *genomic* barcodes (intron-containing;
+  they self-translate with stops), and `coding2genome` mis-frames them.
+  - `ncbi_utils`: new `taxon_fallbacks` (exact taxon → genus); `search_ncbi_protein` gains a
+    `field` param (default `[Protein Name]`).
+  - `pages/2_NCBI_References.py`: **Reference type** toggle (Protein default for coding /
+    Nucleotide), per-locus DB (rDNA forced nucleotide), **taxon fallback** in preview + fetch
+    (shows which taxon level was used), and protein fetch prefers **RefSeq/full-length** proteins
+    → Exonerate auto-runs protein2genome (frame-safe, intron-immune, cross-species).
+  - Verified live: `Alternaria aff. eureka` → genus fallback to `Alternaria` (RPB2 4564 / ACT 612
+    protein hits). Tests: `TestTaxonFallbacks` (+4) → **218 passing**.
+- **Bug fix — ITSx failed on genome assemblies (LXD-003).** ITSx runs HMMER `hmmscan`, which
+  aborts on any sequence > 100 kb; genome contigs are Mb-scale, so ITSx silently returned no
+  rDNA (exit 0 + empty). `itsx_utils.run_itsx` now chunks contigs > 90 kb into overlapping
+  (20 kb) windows via new `chunk_long_contigs`, de-dupes identical output regions, and reports
+  the hmmscan over-limit error as rc=1 instead of an empty result. Verified on a real assembly
+  (ITS_full 481 bp + ITS1/ITS2/SSU/LSU recovered). Affected the retired monolith too
+  (pre-existing). Tests: `TestChunkLongContigs` (+4) → **214 passing**.
+- **Decomposition complete — Workflow orchestrator + monolith retired (D-016 / RM-007 step 5).**
+  - New `pages/6_Workflow.py`: a named-strategy selector ("Fungal barcodes (ITSx + Exonerate)",
+    "Primers only", "Everything") over a **manifest-driven checklist** that shows each step's live
+    status (`workflow.steps`) and links to its component page (`st.page_link`, with a caption
+    fallback so it never crashes when the page registry is unavailable).
+  - **Relaxed BLAST-amplicon strategy ported** into `pages/4_Exonerate.py` as a mode toggle
+    ("Exonerate (frame-safe)" | "BLAST amplicon (relaxed, genomic)", `require_complete_cds=False`)
+    — no capability lost on retirement.
+  - **Retired the monolithic `pages/2_Loci_Extraction.py`** (logic lives in `src/`); renumbered
+    to the final layout: 2 NCBI References · 3 ITSx (rDNA) · 4 Exonerate · 5 Primers · 6 Workflow
+    · 7 Alignment Prep · 8 BUSCO · 9 Tree.
+  - CLAUDE.md repository-layout + extraction-strategy sections updated. All 10 pages
+    render-verified (AppTest); **210 tests pass**. **RM-007 complete** — the component-page +
+    manifest-chained workflow (D-012) is now the app's structure.
+- **Primers (in-silico PCR) component page (RM-007 step 4e).** New standalone
+  `pages/2_Primers.py`: assign primer pairs (citable catalogue / saved library / custom inline)
+  to loci, define custom loci for markers not in the catalogue, optionally **preview &
+  disambiguate** binding sites, then extract amplicons via `run_primer_extraction` (IUPAC
+  degenerate handling, D-009). Per-project outputs + combined `<locus>_amplicon_combined.fasta`;
+  provenance to `workflow.steps.primers`. Reuses the tested `primer_utils` (no new src logic).
+  **210 tests** pass; render verified headless (AppTest: assemblies, 11 primer-loci options,
+  run button). **Completes the four extraction component pages (4b–4e).**
+- **Exonerate (coding loci) component page (RM-007 step 4d).** New standalone
+  `pages/2_Exonerate.py`: assemblies × coding loci (from the per-project reference library)
+  and/or an ad-hoc **gene of interest** → BLAST-narrow + Exonerate frame-safe CDS (D-008), with
+  the BLAST HSP-as-exon fallback + frame-safety warning when `exonerate` is absent. Per-project
+  outputs (`<project>/results/loci`) + combined CDS/protein/genomic/introns via
+  `merge_per_strain_outputs`; provenance to `workflow.steps.coding`. Reuses the already-tested
+  `extract_locus_exonerate` / `extract_locus` / `merge_per_strain_outputs` (no new src logic).
+  **210 tests** still pass; page render verified headless via AppTest (assemblies, loci, GOI
+  input, settings, run button; exonerate detected in the env so no fallback warning).
+- **ITSx (rDNA) component page + per-project extraction outputs (D-015 / RM-007 step 4c).**
+  New standalone `pages/2_ITSx_rDNA.py`: pick assemblies + rDNA regions (ITS/ITS1/ITS2/LSU/SSU)
+  → run ITSx → per-strain region FASTAs + cross-strain `*_combined.fasta`, with provenance to
+  `workflow.steps.rDNA`. **D-015:** extraction outputs are now **per-project** under
+  `<project>/results/loci/{per_strain,combined}` (not the shared `output_base`), avoiding
+  cross-project collisions; Alignment Prep reads any directory (`rglob`) so it stays compatible.
+  New tested helpers `itsx_utils.place_rdna_regions` / `combine_rdna_regions` factor the
+  region-placement + combine logic the monolith did inline. Tests: 2 new → **210 passing**;
+  page render verified headless via AppTest (7 assemblies, region checkboxes, run button).
 - **NCBI References component page (D-012/D-013 / RM-007 step 4b).** New standalone
   `pages/2_NCBI_References.py`: tick loci as **checkboxes** → **preview NCBI hit counts** for
   the project taxon → **fetch** top-N (type-preferred) into the **per-project** library

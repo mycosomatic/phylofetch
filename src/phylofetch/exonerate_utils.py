@@ -43,6 +43,7 @@ Exonerate (and narrowing-BLAST) call is logged with its command + tool version.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -63,6 +64,7 @@ from .blast_loci_utils import (
     select_best_locus_group,
     write_codon_partition,
     write_gff3,
+    write_region_gff3,
     _build_description,
 )
 
@@ -117,6 +119,7 @@ def run_exonerate(
     manager=None,
     module: str = "loci_extraction",
     action: str = "exonerate",
+    timeout: int = 900,
 ) -> tuple[int, str, str]:
     """
     Run Exonerate and return ``(returncode, raw_stdout_text, gff_path)``.
@@ -125,6 +128,8 @@ def run_exonerate(
     spurious giant introns, whereas fungal introns are typically 50-300 bp.
     When ``manager`` (a RunManager) is given the command is executed and logged
     through it (command + exonerate version captured in the run folder).
+    ``timeout`` (seconds) bounds the call so a wedged Exonerate can't hang the app;
+    a timeout or launch failure is surfaced as a non-zero rc, not an exception (D-033).
     """
     os.makedirs(output_dir, exist_ok=True)
     cmd = [
@@ -153,6 +158,7 @@ def run_exonerate(
             inputs={"query": query_fasta, "target": target_fasta},
             params={"model": model, "minintron": minintron, "maxintron": maxintron,
                     "bestn": bestn, "refine": refine, "geneticcode": geneticcode},
+            timeout=timeout,
         )
         try:
             raw = Path(rr.stdout_path).read_text(encoding="utf-8")
@@ -160,13 +166,23 @@ def run_exonerate(
             raw = ""
         rc = rr.returncode
     else:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        raw = proc.stdout or ""
-        rc = proc.returncode
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            raw = proc.stdout or ""
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            raw, rc = "", 124
+        except (FileNotFoundError, OSError):
+            raw, rc = "", 127
 
-    gff_path = os.path.join(output_dir, "exonerate.gff")
-    Path(gff_path).write_text(raw, encoding="utf-8")
-    return rc, raw, gff_path
+    # Save Exonerate's verbatim stdout for provenance/debugging — but as `.txt`, NOT `.gff`:
+    # the raw output begins with `Command line: [...]` / `Hostname:` lines and is NOT valid GFF,
+    # so a `.gff` name invited importing it into Geneious, which then choked on `--model` where it
+    # expected a coordinate. The clean, importable annotation is the per-locus `LOCUS.gff3`
+    # (written by `write_gff3`); this file is only the raw tool log. (D-029)
+    raw_path = os.path.join(output_dir, "exonerate_raw.txt")
+    Path(raw_path).write_text(raw, encoding="utf-8")
+    return rc, raw, raw_path
 
 
 # ── Output parsing ───────────────────────────────────────────────────────────
@@ -319,6 +335,33 @@ def validate_cds(cds_seq: str, geneticcode: int = 1) -> dict:
     }
 
 
+# ── Genomic soft-masking (exon/intron boundary annotation) ──────────────────
+
+def soft_mask_genomic(contig_seq: str, g_min: int, g_max: int,
+                      intron_coords: list[tuple[int, int]], is_minus: bool) -> str:
+    """
+    The genomic gene span ``contig_seq[g_min..g_max]`` (1-based, inclusive), oriented to the
+    coding strand and written **exons UPPERCASE / introns lowercase**.
+
+    Soft-masking the introns by case carries Exonerate's exon/intron boundaries into the
+    sequence itself, so they stay visible — and pinned to the right bases as gaps are inserted —
+    when the gene is aligned/curated by hand, while remaining inert to aligners and tree tools
+    (nucleotide case is ignored). Used for every Exonerate genomic product so the user's own
+    extracted loci and the comparison tips are annotated identically (D-022). Returns "" for an
+    empty/invalid span; Biopython's reverse_complement preserves case, so the masking survives
+    the minus-strand flip.
+    """
+    if g_min <= 0 or g_max <= 0 or g_max < g_min:
+        return ""
+    chars = [c.upper() for c in contig_seq[g_min - 1:g_max]]
+    for s, e in intron_coords:
+        lo, hi = (s, e) if s <= e else (e, s)
+        for p in range(max(lo, g_min), min(hi, g_max) + 1):
+            chars[p - g_min] = chars[p - g_min].lower()
+    seq = "".join(chars)
+    return str(Seq(seq).reverse_complement()) if is_minus else seq
+
+
 # ── Build the shared result dict from an Exonerate model ────────────────────
 
 def build_result_from_model(
@@ -367,10 +410,11 @@ def build_result_from_model(
         })
     cds_seq = "".join(cds_parts).upper()
 
-    # Genomic gene span (exons + introns).
+    # Genomic gene span (exons + introns), soft-masked: exons UPPERCASE / introns lowercase so
+    # the boundaries are visible for by-hand alignment (case is inert to aligners/tree tools).
     g_min = model["gene_start"] or min((e["g_start"] for e in exons), default=0)
     g_max = model["gene_end"] or max((e["g_end"] for e in exons), default=0)
-    amplicon = _oriented(contig_seq[g_min - 1:g_max]).upper()
+    amplicon = soft_mask_genomic(contig_seq, g_min, g_max, model["introns"], is_minus)
 
     # Introns: Exonerate gives them explicitly (no gap inference needed).
     introns: list[dict] = []
@@ -544,9 +588,11 @@ def write_exonerate_log(result: dict, output_dir: str,
         f"  paralog_cands {result.get('n_other_models', 0)} other model(s)",
         "",
         "[QC]",
+        f"  geneticcode    {result.get('geneticcode', 1)}",
         f"  reading_frame {frame_note}",
         f"  internal_stops {stops}",
         f"  tcs_crosscheck {result.get('tcs_matches')}",
+        f"  refine_used    {result.get('refine_used', 'none')}",
         f"  verdict        {qc_verdict}",
         "",
     ]
@@ -584,6 +630,8 @@ def extract_locus_exonerate(
     evalue: float = 1e-20,
     threads: int = 4,
     strict_qc: bool = False,
+    escalate_refine: bool = True,
+    escalate_ceiling: str = "region",
     manager=None,
     run_dir: str = "",
 ) -> tuple[Optional[dict], str]:
@@ -615,10 +663,12 @@ def extract_locus_exonerate(
     contig_seq_cache: dict[str, str] = {}
     narrowed = False
 
+    narrow_warning = ""
     if narrow and shutil.which(narrow_bin):
         rc, _stderr, tsv = run_blast(
             reference_fasta, assembly_fasta, output_dir,
             blast_bin=narrow_bin, task=None, evalue=evalue, threads=threads,
+            manager=manager, module="blast", action=f"narrow_locus:{locus_name}",
         )
         if rc == 0:
             best, ref_acc = select_best_locus_group(
@@ -632,38 +682,77 @@ def extract_locus_exonerate(
                     SeqIO.write([SeqRecord(Seq(contig_seq), id=contig_id,
                                            description="")], target_fasta, "fasta")
                     narrowed = True
+        else:
+            # Don't silently fall back: a BLAST *error* (vs. a genuine no-hit) means Exonerate
+            # runs on the WHOLE assembly — slower, and it can pick a paralog. Flag it so the
+            # riskier path is a visible decision, not a hidden one. (D-033)
+            narrow_warning = (f" [WARN: narrowing {narrow_bin} failed (exit {rc}) — "
+                              f"ran Exonerate on whole assembly]")
     # If narrowing produced nothing, target_fasta stays = whole assembly.
 
-    # ── Step 2: run Exonerate ──
-    rc, raw, _gff = run_exonerate(
-        reference_fasta, target_fasta, model, output_dir,
-        exonerate_bin=exonerate_bin, minintron=minintron, maxintron=maxintron,
-        bestn=bestn, score=score, refine=refine, geneticcode=geneticcode,
-        manager=manager, action=f"exonerate_{locus_name}_{strain_id}",
-    )
-    if rc != 0:
-        return None, f"Exonerate failed (exit {rc})"
+    # ── Steps 2-3: run Exonerate + build result, escalating boundary refinement when the CDS
+    # comes out frameshifted / with internal stops (D-030). Exonerate's protein2genome can misplace
+    # a splice boundary by a base or two on some sequences (a couple of substitutions near a splice
+    # site are enough), frameshifting the reconstructed CDS even though the genomic DNA is clean.
+    # `--refine region`/`full` re-optimizes the boundaries and recovers the frame in most such cases.
+    # The first pass uses the requested `refine`; only if that isn't clean (and `escalate_refine`)
+    # do we retry at higher refinement, keeping the cleanest result — so the common clean case stays
+    # a single fast pass. Escalation stops at `escalate_ceiling` (default "region"): `--refine full`
+    # re-runs *exhaustive* DP over the whole narrowed contig (minutes on a multi-Mb contig / long
+    # multi-intron gene like RPB2) and — verified on the aff. eureka strains — rescued nothing that
+    # `region` didn't, so it is opt-in (Thorough effort / the page's targeted deep-refine pass). (D-035)
+    REFINE_ORDER = ["none", "region", "full"]
+    start = REFINE_ORDER.index(refine) if refine in REFINE_ORDER else 0
+    if escalate_refine:
+        ceil = REFINE_ORDER.index(escalate_ceiling) if escalate_ceiling in REFINE_ORDER else 1
+        levels = REFINE_ORDER[start:max(ceil, start) + 1]
+    else:
+        levels = [refine]
 
-    models = parse_exonerate_gff(raw)
-    if not models:
-        return None, "Exonerate found no gene model (try whole-assembly target or lower thresholds)"
+    def _run_build(refine_level: str):
+        rc, raw, _gff = run_exonerate(
+            reference_fasta, target_fasta, model, output_dir,
+            exonerate_bin=exonerate_bin, minintron=minintron, maxintron=maxintron,
+            bestn=bestn, score=score, refine=refine_level, geneticcode=geneticcode,
+            manager=manager, action=f"exonerate_{locus_name}_{strain_id}",
+        )
+        if rc != 0:
+            return None, f"Exonerate failed (exit {rc})"
+        ms = parse_exonerate_gff(raw)
+        if not ms:
+            return None, "Exonerate found no gene model (try whole-assembly target or lower thresholds)"
+        bm, others = select_best_model(ms, min_score=(score or 0.0))
+        if bm is None:
+            return None, f"No Exonerate model scored ≥ {score}"
+        cseq = contig_seq_cache.get(bm["contig"]) or _load_contig(assembly_fasta, bm["contig"])
+        if cseq is None:
+            return None, f"Contig '{bm['contig']}' not found in assembly"
+        res = build_result_from_model(
+            bm, cseq, strain_id, locus_name,
+            ref_accession=ref_acc, exonerate_version=_probe_exonerate_version(exonerate_bin),
+            geneticcode=geneticcode, n_other_models=len(others),
+        )
+        return res, "OK"
 
-    best_model, others = select_best_model(models, min_score=(score or 0.0))
-    if best_model is None:
-        return None, f"No Exonerate model scored ≥ {score}"
-
-    # ── Step 3: build result + QC ──
-    contig_seq = contig_seq_cache.get(best_model["contig"])
-    if contig_seq is None:
-        contig_seq = _load_contig(assembly_fasta, best_model["contig"])
-    if contig_seq is None:
-        return None, f"Contig '{best_model['contig']}' not found in assembly"
-
-    result = build_result_from_model(
-        best_model, contig_seq, strain_id, locus_name,
-        ref_accession=ref_acc, exonerate_version=_probe_exonerate_version(exonerate_bin),
-        geneticcode=geneticcode, n_other_models=len(others),
-    )
+    result = None
+    best_q = None
+    used_refine = refine
+    last_err = "Exonerate found no gene model"
+    for lvl in levels:
+        res, st = _run_build(lvl)
+        if res is None:
+            last_err = st
+            continue
+        q = (res["len_mod3"] == 0, -res["n_internal_stops"])   # frame-OK first, then fewer stops
+        if best_q is None or q > best_q:
+            result, best_q, used_refine = res, q, lvl
+        if res["n_internal_stops"] == 0 and res["len_mod3"] == 0:
+            break                                              # clean — stop escalating
+    if result is None:
+        return None, last_err
+    result["refine_used"] = used_refine
+    result["refine_escalated"] = used_refine != refine
+    result["geneticcode"] = geneticcode   # recorded so a later re-validation uses the SAME table
 
     if strict_qc and (result["n_internal_stops"] > 0 or result["len_mod3"] != 0):
         return None, (
@@ -680,6 +769,7 @@ def extract_locus_exonerate(
     )
     write_exonerate_fastas(result, output_dir, extracted_at=ts)
     write_gff3(result, output_dir)
+    write_region_gff3(result, output_dir)
     write_codon_partition(result["cds_length"], output_dir, locus_name)
     write_exonerate_log(result, output_dir, exonerate_cmd=exo_cmd,
                         reference_fasta=reference_fasta, narrowed=narrowed,
@@ -689,4 +779,82 @@ def extract_locus_exonerate(
     if result["n_internal_stops"] > 0 or result["len_mod3"] != 0:
         status = (f"OK (QC: review — {result['n_internal_stops']} internal stop(s), "
                   f"len % 3 = {result['len_mod3']})")
+    if result.get("refine_escalated"):
+        status += f" [boundary-refined: refine={used_refine}]"
+    status += narrow_warning
     return result, status
+
+
+def scan_flagged_cds(per_strain_dir: str, geneticcode: int = 1) -> list[dict]:
+    """
+    Stateless scan of extracted coding loci for a CDS that needs attention (frameshift / internal
+    stop), so a targeted ``--refine full`` rescue pass can be offered at **any** time — including a
+    future session, e.g. when downstream analysis fails — without relying on the run's session
+    state. Reads each ``<strain>/<locus>/<locus>_CDS.fasta`` and re-validates its reading frame
+    (`validate_cds`), independent of how it was produced (D-035).
+
+    Returns one row per flagged ``(strain, locus)``::
+
+        {strain, locus, locus_dir, cds_length, len_mod3, n_internal_stops, refine_used, geneticcode}
+
+    The CDS is re-validated under the genetic code recorded in its extraction log — **not** the
+    `geneticcode` argument — whenever the log records one, so a later change to the page's genetic-code
+    widget can't by itself flip a clean CDS to flagged or vice versa (D-036 review). The argument is
+    only the fallback for loci extracted before the code was logged. ``refine_used`` is parsed from
+    the log when present, so the user can see which refinement level already ran; "" when unknown.
+    Clean CDS are omitted.
+    """
+    rows: list[dict] = []
+    root = Path(per_strain_dir)
+    if not root.is_dir():
+        return rows
+    for strain_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        for locus_dir in sorted(p for p in strain_dir.iterdir() if p.is_dir()):
+            locus = locus_dir.name
+            cds_fa = locus_dir / f"{locus}_CDS.fasta"
+            if not cds_fa.exists():
+                continue
+            try:
+                recs = list(SeqIO.parse(str(cds_fa), "fasta"))
+            except Exception:
+                continue
+            if not recs:
+                continue
+            log = locus_dir / f"{locus}_extraction.log"
+            log_text = log.read_text(errors="replace") if log.exists() else ""
+            # Re-validate under the code the locus was ORIGINALLY extracted with (logged), not the
+            # caller's current widget — otherwise a code change alone could flip the verdict.
+            mgc = re.search(r"geneticcode[:= ]+(\d+)", log_text)
+            gc = int(mgc.group(1)) if mgc else geneticcode
+            qc = validate_cds(str(recs[0].seq), geneticcode=gc)
+            if qc["len_mod3"] == 0 and qc["n_internal_stops"] == 0:
+                continue   # clean — nothing to rescue
+            m = re.search(r"refine[_ ]?used[:= ]+(\w+)|boundary-refined: refine=(\w+)", log_text)
+            refine_used = (m.group(1) or m.group(2) or "") if m else ""
+            rows.append({
+                "strain": strain_dir.name, "locus": locus, "locus_dir": str(locus_dir),
+                "cds_length": qc["length"], "len_mod3": qc["len_mod3"],
+                "n_internal_stops": qc["n_internal_stops"], "refine_used": refine_used,
+                "geneticcode": gc,
+            })
+    return rows
+
+
+def resolve_guide_path(locus: str, project_dir: str, goi_dir, ref_dir,
+                       is_goi: bool = False) -> Optional[str]:
+    """
+    Find the guide FASTA that would extract ``locus``, for a deep-refine re-run (D-035): the saved
+    bundled/both/protein-library query (``scratch/guides``), a gene-of-interest ref
+    (``_goi_refs``), or the nucleotide library FASTA — whichever exists, with **no directory side
+    effects**. For a gene of interest, the user's uploaded ortholog takes precedence over a
+    same-named catalogue guide (D-036 review: a GOI named e.g. "RPB2" must not silently resolve to
+    the bundled RPB2 guide). Returns ``None`` when no guide is on disk.
+    """
+    goi = Path(goi_dir) / f"{locus}.fasta"
+    scratch = Path(project_dir) / "scratch" / "guides" / f"{locus}_guide.fasta"
+    lib = Path(ref_dir) / locus / f"{locus}_refs.fasta"
+    order = [goi, scratch, lib] if is_goi else [scratch, goi, lib]
+    for c in order:
+        if c.exists() and c.stat().st_size > 0:
+            return str(c)
+    return None

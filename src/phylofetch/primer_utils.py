@@ -346,7 +346,11 @@ def _run_blastn_short(
         except OSError:
             return []
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        # Wedged/missing blastn must not hang or crash the manager-less path (D-033).
+        return []
     if proc.returncode != 0:
         return []
     return _parse_blast_rows(proc.stdout)
@@ -466,6 +470,39 @@ def find_primer_amplicons(
 
     candidates.sort(key=lambda c: (c["total_edit"], c["amp_len"]))
     return candidates
+
+
+def find_primer_amplicons_escalating(
+    assembly_fasta: str,
+    primer_pair: PrimerPair,
+    start_mismatches: int = 2,
+    max_mismatches: int = 4,
+    blastn_bin: str = "blastn",
+    manager=None,
+    module: str = "loci_extraction",
+    action: str = "primer_search",
+) -> tuple[list[dict], int]:
+    """
+    Search at **escalating** per-primer edit-distance thresholds, from ``start_mismatches`` up
+    to ``max_mismatches``, returning the first threshold that yields any amplicon along with
+    the threshold used: ``(candidates, used_mismatches)``.
+
+    Strict-first, so a clean match is never loosened more than necessary — but a primer that's
+    a few bases off in a divergent target (e.g. a congener's primers in a novel species) is
+    still recovered without manual fiddling. Returns ``([], max_mismatches)`` if nothing pairs
+    even at the cap. ``ValueError`` (over-degenerate primer) propagates from the first attempt.
+    """
+    start = max(0, min(start_mismatches, max_mismatches))
+    used = max_mismatches
+    for t in range(start, max_mismatches + 1):
+        candidates = find_primer_amplicons(
+            assembly_fasta, primer_pair, max_mismatches=t, blastn_bin=blastn_bin,
+            manager=manager, module=module, action=action,
+        )
+        used = t
+        if candidates:
+            return candidates, t
+    return [], used
 
 
 # ── Amplicon extraction & logging ──────────────────────────────────────────────
@@ -601,25 +638,34 @@ def run_primer_extraction(
     manager=None,
     candidates: Optional[list[dict]] = None,
     chosen_index: int = 0,
+    escalate_to: Optional[int] = None,
 ) -> tuple[Optional[dict], str]:
     """
     Top-level primer-based locus extraction.
 
     If ``candidates`` is given (e.g. from a user review/disambiguation step), the
     one at ``chosen_index`` is extracted; otherwise the assembly is searched and
-    the lowest-edit-distance candidate is used. When ``manager`` is supplied the
-    blastn call is logged through it. Always writes a per-locus extraction log.
-
-    Returns (result_dict, status). status == "ok" on success.
+    the lowest-edit-distance candidate is used. When ``escalate_to`` is set (and
+    > ``max_mismatches``) the fresh search escalates the edit-distance threshold from
+    ``max_mismatches`` up to ``escalate_to``, stopping at the first that yields an amplicon.
+    When ``manager`` is supplied the blastn call is logged through it. Always writes a
+    per-locus extraction log. Returns (result_dict, status). status == "ok" on success.
     """
     action = f"primer_{locus_name}_{strain_id}"
     if candidates is None:
         try:
-            candidates = find_primer_amplicons(
-                assembly_fasta, primer_pair,
-                max_mismatches=max_mismatches, blastn_bin=blastn_bin,
-                manager=manager, action=action,
-            )
+            if escalate_to is not None and escalate_to > max_mismatches:
+                candidates, max_mismatches = find_primer_amplicons_escalating(
+                    assembly_fasta, primer_pair,
+                    start_mismatches=max_mismatches, max_mismatches=escalate_to,
+                    blastn_bin=blastn_bin, manager=manager, action=action,
+                )
+            else:
+                candidates = find_primer_amplicons(
+                    assembly_fasta, primer_pair,
+                    max_mismatches=max_mismatches, blastn_bin=blastn_bin,
+                    manager=manager, action=action,
+                )
         except ValueError as exc:
             status = f"Primer too degenerate to search: {exc}"
             write_primer_extraction_log(

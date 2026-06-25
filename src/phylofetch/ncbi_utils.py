@@ -10,8 +10,10 @@ Reference library stored at ~/.phylofetch/references/.
 import json
 import os
 import time
+import urllib.error
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
+from http.client import HTTPException
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +36,67 @@ def _require_email() -> None:
             "NCBI Entrez email not set. "
             "Enter your email in Project Setup before fetching."
         )
+
+
+# ── Entrez transport: throttle, retry, typed errors (D-034) ──────────────────
+#
+# Naked Entrez calls fail two ways that matter for research correctness: a transient network
+# blip (DNS, NCBI 5xx, HTTP 429 rate-limit) either crashes a page or — if a caller swallows it
+# — looks like a genuine "0 hits / not found", silently changing which references a study uses.
+# Every Entrez call now goes through `_entrez_retry`, which throttles to NCBI's rate limit,
+# retries transient failures with backoff, and on final failure raises a typed `NCBIError` the
+# UI can distinguish from an honest empty result. An `NCBI_API_KEY` (env or `set_api_key`)
+# raises the limit from 3 to ~9 req/s.
+
+_entrez_api_key: str = os.environ.get("NCBI_API_KEY", "")
+if _entrez_api_key:
+    Entrez.api_key = _entrez_api_key
+
+
+class NCBIError(RuntimeError):
+    """An NCBI Entrez request failed after retries (network / HTTP / parse) — NOT 'no hits'."""
+
+
+# Bio.Entrez.read raises RuntimeError on an NCBI-side error body; the rest are transport-level.
+_TRANSIENT_ERRORS = (
+    urllib.error.URLError, urllib.error.HTTPError, HTTPException, OSError, RuntimeError,
+)
+
+_MIN_INTERVAL_NO_KEY = 0.34   # ~3 requests/s, the unauthenticated NCBI limit
+_MIN_INTERVAL_KEY = 0.11      # ~9 requests/s with an API key
+_last_entrez_call = [0.0]
+
+
+def set_api_key(key: str) -> None:
+    """Set the NCBI API key (raises the rate limit); also picked up from $NCBI_API_KEY."""
+    global _entrez_api_key
+    _entrez_api_key = key or ""
+    Entrez.api_key = _entrez_api_key
+
+
+def _throttle() -> None:
+    interval = _MIN_INTERVAL_KEY if getattr(Entrez, "api_key", "") else _MIN_INTERVAL_NO_KEY
+    wait = interval - (time.time() - _last_entrez_call[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_entrez_call[0] = time.time()
+
+
+def _entrez_retry(thunk, *, what: str, retries: int = 3, base_delay: float = 0.5):
+    """
+    Run ``thunk`` (which opens a handle and parses it) with rate-throttling and retry-on-
+    transient. Returns the thunk's value; raises ``NCBIError`` if it fails every attempt.
+    """
+    last = None
+    for attempt in range(retries):
+        _throttle()
+        try:
+            return thunk()
+        except _TRANSIENT_ERRORS as exc:
+            last = exc
+            if attempt < retries - 1:
+                time.sleep(base_delay * (2 ** attempt))
+    raise NCBIError(f"NCBI request failed ({what}) after {retries} attempts: {last}") from last
 
 
 # ── Reference library ────────────────────────────────────────────────────────
@@ -264,10 +327,14 @@ def fetch_record_with_meta(
     what the FASTA-only fetch threw away.
     """
     _require_email()
-    time.sleep(0.34)
-    handle = Entrez.efetch(db=db, id=accession, rettype="gb", retmode="text")
-    records = list(SeqIO.parse(handle, "genbank"))
-    handle.close()
+    def _do():
+        handle = Entrez.efetch(db=db, id=accession, rettype="gb", retmode="text")
+        records = list(SeqIO.parse(handle, "genbank"))
+        handle.close()
+        return records
+    # A transient failure now raises NCBIError (caught per-accession by fetch_and_store and
+    # recorded as an error) instead of returning (None, None) → a false "not found" (D-034).
+    records = _entrez_retry(_do, what=f"efetch {accession}")
     if not records:
         return None, None
     rec = records[0]
@@ -288,20 +355,37 @@ def fetch_record_with_meta(
 
 _TYPE_FILTER = "sequence_from_type[filter]"
 
+# RefSeq genome-annotation restriction (D-024). `srcdb_refseq[prop]` keeps only RefSeq records
+# (XP_/NP_ for eukaryotes), i.e. full-length proteins predicted from annotated genome assemblies
+# — the "closest annotated genome" the References page wants for extraction guides. Verified live:
+# `refseq[filter]` does NOT work for this (0 hits with a [Protein Name] query); `srcdb_refseq[prop]`
+# is the property that matches (e.g. Alternaria TEF1: 4172 protein records, only 3 RefSeq — the
+# rest are partial-CDS barcode translations, including a 5-aa fragment).
+_REFSEQ_FILTER = "srcdb_refseq[prop]"
+
 
 def _esearch_ids(db: str, term: str, max_results: int) -> list[str]:
-    handle = Entrez.esearch(db=db, term=term, retmax=max_results)
-    record = Entrez.read(handle)
-    handle.close()
-    return list(record.get("IdList", []))
+    def _do():
+        handle = Entrez.esearch(db=db, term=term, retmax=max_results)
+        record = Entrez.read(handle)
+        handle.close()
+        return list(record.get("IdList", []))
+    return _entrez_retry(_do, what=f"esearch '{term}'")
 
 
 def _summary_to_dict(s) -> dict:
+    title = str(s.get("Title", ""))
+    organism = str(s.get("Organism", ""))
+    # Protein esummary doesn't populate Organism, but the title ends with "...[Organism]"
+    # (e.g. "elongation factor 1-alpha [Paraphaeosphaeria sp.]") — parse it so the candidate
+    # picker can show which taxon each reference comes from (D-024; cf. the D-014 stitle finding).
+    if not organism and title.endswith("]") and "[" in title:
+        organism = title[title.rfind("[") + 1:-1].strip()
     return {
         "uid":       str(s.get("Id", "")),
         "accession": str(s.get("AccessionVersion", "")),
-        "title":     str(s.get("Title", "")),
-        "organism":  str(s.get("Organism", "")),
+        "title":     title,
+        "organism":  organism,
         "length":    int(s.get("Length", 0)),
     }
 
@@ -333,17 +417,18 @@ def _search_ncbi(db: str, base_query: str, max_results: int,
     else:
         ids = _esearch_ids(db, base_query, max_results)
         if ids:
-            time.sleep(0.34)
             type_uids = set(_esearch_ids(db, f"{base_query} AND {_TYPE_FILTER}", max_results))
         else:
             type_uids = set()
     if not ids:
         return []
 
-    time.sleep(0.34)
-    handle = Entrez.esummary(db=db, id=",".join(ids))
-    summaries = Entrez.read(handle)
-    handle.close()
+    def _do_summary():
+        handle = Entrez.esummary(db=db, id=",".join(ids))
+        s = Entrez.read(handle)
+        handle.close()
+        return s
+    summaries = _entrez_retry(_do_summary, what="esummary")
 
     results = _mark_type_set([_summary_to_dict(s) for s in summaries], type_uids)
     if type_mode == "prefer":
@@ -393,12 +478,30 @@ def build_entrez_query(terms, organism: str = "", field: str = "Title") -> str:
     return f"{joined} AND {org}[Organism]" if org else joined
 
 
+def taxon_fallbacks(taxon: str) -> list[str]:
+    """
+    Ordered organism candidates for a reference search: the given taxon first, then its genus
+    (the first whitespace token) as a fallback. Lets a search for a novel/unsequenced species
+    (e.g. 'Alternaria aff. eureka', absent from NCBI) fall back to the genus 'Alternaria'.
+    De-duplicated case-insensitively; empty input → [].
+    """
+    t = (taxon or "").strip()
+    if not t:
+        return []
+    out = [t]
+    genus = t.split()[0]
+    if genus and genus.lower() != t.lower():
+        out.append(genus)
+    return out
+
+
 def search_ncbi_protein(gene_name, organism: str,
-                        max_results: int = 20, type_mode: str = "all") -> list[dict]:
-    return _search_ncbi(
-        "protein", build_entrez_query(gene_name, organism, field="Gene Name"),
-        max_results, type_mode,
-    )
+                        max_results: int = 20, type_mode: str = "all",
+                        field: str = "Protein Name", refseq_only: bool = False) -> list[dict]:
+    query = build_entrez_query(gene_name, organism, field=field)
+    if refseq_only:
+        query = f"{query} AND {_REFSEQ_FILTER}"     # genome-annotated, full-length (D-024)
+    return _search_ncbi("protein", query, max_results, type_mode)
 
 
 def search_ncbi_nucleotide(gene_name, organism: str,
@@ -410,40 +513,52 @@ def search_ncbi_nucleotide(gene_name, organism: str,
 
 
 def ncbi_search_count(gene_name, organism: str, db: str = "nucleotide",
-                      field: str = "Title", type_mode: str = "all") -> int:
+                      field: str = "Title", type_mode: str = "all",
+                      refseq_only: bool = False) -> int:
     """
     Total number of NCBI matches for a (synonym) query, without fetching the IDs — a cheap
     esearch with ``retmax=0`` returning the ``Count``. Used by the References page to preview
     how many references each locus would yield before fetching. ``type_mode="type_only"``
-    counts only sequence-from-type records; "prefer"/"all" return the full count.
+    counts only sequence-from-type records; ``refseq_only=True`` restricts to RefSeq genome-
+    annotated records (D-024); "prefer"/"all" return the full count.
     """
     _require_email()
     query = build_entrez_query(gene_name, organism, field=field)
+    if refseq_only:
+        query = f"{query} AND {_REFSEQ_FILTER}"
     if type_mode == "type_only":
         query = f"{query} AND {_TYPE_FILTER}"
-    handle = Entrez.esearch(db=db, term=query, retmax=0)
-    record = Entrez.read(handle)
-    handle.close()
-    return int(record.get("Count", 0))
+    def _do():
+        handle = Entrez.esearch(db=db, term=query, retmax=0)
+        record = Entrez.read(handle)
+        handle.close()
+        return int(record.get("Count", 0))
+    # Raise (not return 0) on a network failure so a transient blip can't masquerade as a
+    # genuine "0 references for this locus" — a wrong-but-plausible result (D-034).
+    return _entrez_retry(_do, what=f"count '{query}'")
 
 
 # ── NCBI fetch ───────────────────────────────────────────────────────────────
 
 def fetch_protein_by_accession(accession: str) -> Optional[SeqRecord]:
     _require_email()
-    time.sleep(0.34)
-    handle = Entrez.efetch(db="protein", id=accession, rettype="fasta", retmode="text")
-    records = list(SeqIO.parse(handle, "fasta"))
-    handle.close()
+    def _do():
+        handle = Entrez.efetch(db="protein", id=accession, rettype="fasta", retmode="text")
+        records = list(SeqIO.parse(handle, "fasta"))
+        handle.close()
+        return records
+    records = _entrez_retry(_do, what=f"efetch protein {accession}")
     return records[0] if records else None
 
 
 def fetch_nucleotide_by_accession(accession: str) -> Optional[SeqRecord]:
     _require_email()
-    time.sleep(0.34)
-    handle = Entrez.efetch(db="nucleotide", id=accession, rettype="fasta", retmode="text")
-    records = list(SeqIO.parse(handle, "fasta"))
-    handle.close()
+    def _do():
+        handle = Entrez.efetch(db="nucleotide", id=accession, rettype="fasta", retmode="text")
+        records = list(SeqIO.parse(handle, "fasta"))
+        handle.close()
+        return records
+    records = _entrez_retry(_do, what=f"efetch nucleotide {accession}")
     return records[0] if records else None
 
 

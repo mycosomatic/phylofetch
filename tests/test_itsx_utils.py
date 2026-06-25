@@ -14,11 +14,107 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+from Bio import SeqIO
+from Bio.Seq import Seq
+from Bio.SeqRecord import SeqRecord
+
 from phylofetch.itsx_utils import (
     ITSX_SUFFIXES,
     _probe_itsx_version,
+    _relabel_itsx_output,
+    chunk_long_contigs,
+    combine_rdna_regions,
+    parse_coverage,
+    place_rdna_regions,
     run_itsx,
 )
+
+
+class TestCoverageFilter:
+    """D-028: prefer the high-coverage rDNA array; drop low-coverage off-array (RIP'd/spurious)."""
+
+    def test_parse_coverage(self):
+        assert parse_coverage("NODE_1_length_6920269_cov_45.858574_pilon") == 45.858574
+        assert parse_coverage("NODE_12_length_22758_cov_1193.220177_pilon") == 1193.220177
+        assert parse_coverage("scaffold_no_cov_token") is None
+        assert parse_coverage("") is None
+
+    def _write(self, path, recs):
+        SeqIO.write([SeqRecord(Seq(s), id=rid, description=rid) for rid, s in recs], str(path), "fasta")
+
+    def test_drops_low_coverage_offarray_copy(self, tmp_path):
+        # The real NS26 SSU case: a 60 kb spurious hit on the 45x chromosome + the true 2821 bp
+        # region on the 1193x rDNA array. The chromosomal copy must be dropped.
+        f = tmp_path / "NS26.SSU.fasta"
+        self._write(f, [
+            ("NODE_1_length_6920269_cov_45.858574_pilon|1-60084|", "A" * 60084),
+            ("NODE_12_length_22758_cov_1193.220177_pilon|1-2821|", "C" * 2821),
+        ])
+        info = _relabel_itsx_output(str(f), "NS26-3-C2", "SSU")
+        assert info["kept"] == 1
+        assert len(info["dropped"]) == 1 and info["dropped"][0][1] == 45.858574
+        kept = list(SeqIO.parse(str(f), "fasta"))
+        assert len(kept) == 1 and len(kept[0].seq) == 2821       # the array copy, not the 60 kb one
+        assert "[cov=1193]" in kept[0].description
+
+    def test_single_detection_kept_regardless(self, tmp_path):
+        f = tmp_path / "x.SSU.fasta"
+        self._write(f, [("NODE_5_length_9000_cov_30.0_pilon|1-1800|", "G" * 1800)])
+        info = _relabel_itsx_output(str(f), "S1", "SSU")
+        assert info["kept"] == 1 and info["dropped"] == []        # nothing to compare against
+
+    def test_no_coverage_tokens_keeps_all(self, tmp_path):
+        f = tmp_path / "y.SSU.fasta"
+        self._write(f, [("contigA|1-1800|", "G" * 1800), ("contigB|1-1700|", "T" * 1700)])
+        info = _relabel_itsx_output(str(f), "S1", "SSU")
+        assert info["kept"] == 2 and info["dropped"] == []        # un-parseable cov → no filtering
+
+    def test_filter_can_be_disabled(self, tmp_path):
+        f = tmp_path / "z.SSU.fasta"
+        self._write(f, [
+            ("NODE_1_length_9_cov_45.0_pilon|1-60000|", "A" * 60000),
+            ("NODE_2_length_9_cov_1200.0_pilon|1-2800|", "C" * 2800),
+        ])
+        info = _relabel_itsx_output(str(f), "S1", "SSU", prefer_high_cov=False)
+        assert info["kept"] == 2 and info["dropped"] == []
+
+
+class TestChunkLongContigs:
+    """LXD-003: contigs > hmmscan's 100 kb limit are split into overlapping windows."""
+
+    def _rec(self, rid, n):
+        return SeqRecord(Seq("A" * n), id=rid, description="")
+
+    def test_short_contig_passthrough(self):
+        out, changed = chunk_long_contigs([self._rec("c1", 1000)])
+        assert changed is False
+        assert len(out) == 1 and out[0].id == "c1"
+
+    def test_long_contig_split_with_overlap(self):
+        out, changed = chunk_long_contigs([self._rec("big", 250_000)],
+                                          max_len=90_000, overlap=20_000)
+        assert changed is True
+        assert all(len(r.seq) <= 90_000 for r in out)          # under hmmscan limit
+        starts = [int(r.id.split("__c")[1]) for r in out]
+        assert starts == [0, 70_000, 140_000, 210_000]         # step = max_len - overlap
+        assert out[-1].id == "big__c210000"
+        assert len(out[-1].seq) == 250_000 - 210_000            # last chunk reaches the end
+
+    def test_overlap_keeps_small_features_intact(self):
+        # any feature shorter than the overlap is fully contained in at least one chunk
+        out, _ = chunk_long_contigs([self._rec("c", 200_000)], max_len=90_000, overlap=20_000)
+        # consecutive chunks overlap by exactly `overlap`
+        spans = [(int(r.id.split("__c")[1]),
+                  int(r.id.split("__c")[1]) + len(r.seq)) for r in out]
+        for (s0, e0), (s1, e1) in zip(spans, spans[1:]):
+            assert e0 - s1 >= 20_000
+
+    def test_mixed_short_and_long(self):
+        out, changed = chunk_long_contigs([self._rec("s", 100), self._rec("L", 120_000)],
+                                          max_len=90_000, overlap=20_000)
+        assert changed is True
+        ids = [r.id for r in out]
+        assert "s" in ids and any(i.startswith("L__c") for i in ids)
 
 # run_itsx signature: (assembly_fasta, output_dir, strain_id, threads=4,
 #                      itsx_bin="ITSx", kingdom="fungi")
@@ -209,3 +305,36 @@ class TestProbeITSxVersion:
         # If a version line is parsed, it should contain digits
         if version != "unknown":
             assert any(c.isdigit() for c in version)
+
+
+class TestRdnaPlacementAndCombine:
+    """RM-007 step 4c: per-strain region placement + cross-strain combine."""
+
+    def _fasta(self, path: Path, records):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f">{rid}\n{seq}\n" for rid, seq in records))
+
+    def test_place_maps_full_its_and_counts(self, tmp_path):
+        src = tmp_path / "itsx"
+        self._fasta(src / "s.full.fasta", [("c1", "ACGT"), ("c2", "TTTT")])
+        self._fasta(src / "s.LSU.fasta", [("c1", "GGGG")])
+        found = {"ITS_full": str(src / "s.full.fasta"), "LSU": str(src / "s.LSU.fasta")}
+        strain_out = tmp_path / "per_strain" / "s"
+
+        counts = place_rdna_regions(found, str(strain_out), ["ITS", "LSU", "SSU"])
+        assert counts == {"ITS": 2, "LSU": 1, "SSU": 0}
+        assert (strain_out / "ITS" / "ITS.fasta").exists()      # ITS_full -> ITS.fasta
+        assert (strain_out / "LSU" / "LSU.fasta").exists()
+        assert not (strain_out / "SSU" / "SSU.fasta").exists()  # absent region not written
+
+    def test_combine_merges_present_regions_only(self, tmp_path):
+        ps = tmp_path / "per_strain"
+        for strain, seq in [("A", "ACGT"), ("B", "TTTT")]:
+            self._fasta(ps / strain / "ITS" / "ITS.fasta", [(f"{strain}_ITS", seq)])
+        self._fasta(ps / "A" / "SSU" / "SSU.fasta", [("A_SSU", "GG")])
+
+        out = combine_rdna_regions(str(ps), str(tmp_path / "combined"), ["ITS", "SSU", "LSU"])
+        assert set(out) == {"ITS", "SSU"}            # LSU had no sequences -> omitted
+        its_path, its_n = out["ITS"]
+        assert its_n == 2 and its_path.endswith("ITS_combined.fasta")
+        assert out["SSU"][1] == 1

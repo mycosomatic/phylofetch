@@ -54,22 +54,38 @@ phylofetch/
 │   ├── itsx_utils.py
 │   ├── ncbi_utils.py
 │   ├── primer_utils.py
-│   └── project_manager.py # RunManager, tool version probing
-├── pages/                 # Streamlit multi-page app
+│   ├── project_manager.py # RunManager, tool version probing, project manifest
+│   ├── protein_guide_utils.py # bundled protein guides → protein2genome (D-020 / RM-008 c1); guide-length sanity filter (D-025)
+│   ├── codon_prep_utils.py # tips → frame-consistent CDS + full-gene + protein (D-022); nucleotide fallback for intronic barcodes (D-027)
+│   ├── taxon_id_utils.py  # ITS→remote BLAST provisional taxon ID (D-014)
+│   ├── tips_utils.py      # tip import + locus auto-classify (D-020); accession normalize + per-accession assign (D-026)
+│   └── orthology_utils.py # align isolates+tips → p-distance NJ tree → divergence-outlier flag, source-blind (D-036)
+├── pages/                 # Streamlit multi-page app (component-page workflow, D-012; phase-grouped via st.navigation in app.py, D-031)
 │   ├── 0_Project_Setup.py
-│   ├── 1_Assembly_Manager.py
-│   ├── 2_Loci_Extraction.py
-│   ├── 3_Alignment_Prep.py
-│   ├── 4_BUSCO_Phylogenomics.py
-│   └── 5_Tree_Visualization.py
+│   ├── 1_Assembly_Manager.py    # + per-assembly taxonomy + ITS→BLAST provisional ID (D-014)
+│   ├── 2_NCBI_References.py     # optional taxon-closer guides, coding-only, RefSeq + length-aware candidate picker (D-023, D-024, D-025)
+│   ├── 3_ITSx_rDNA.py          # rDNA extraction (per-project outputs, D-015); prefer high-coverage array, drop off-array/RIP'd (D-028)
+│   ├── 4_Exonerate.py          # coding loci: Exonerate frame-safe | relaxed BLAST | GOI; ref length filter (D-025); refine-escalation + loud QC (D-030); effort cap + deep-refine pass (D-035)
+│   ├── 5_Primers.py            # in-silico PCR (degenerate-aware D-009, edit-distance escalation D-019)
+│   ├── 6_Workflow.py           # strategy orchestrator: manifest-driven checklist (D-012)
+│   ├── 7_Reference_Taxa.py     # tree tips: paste → NCBI lookup → per-accession locus assign (D-020, D-026)
+│   ├── 8_Codon_Tip_Prep.py     # frame coding tips → CDS+gene+protein matrices (D-022); intronic barcodes → nucleotide-only genomic (D-027)
+│   ├── 9_Alignment_Prep.py     # with_tips default + aligned-length codon partitions (D-032)
+│   ├── 10_BUSCO_Phylogenomics.py
+│   ├── 11_Tree_Visualization.py
+│   └── 12_Orthology_Check.py   # align isolates+tips → p-distance NJ tree → flag divergence outliers, source-blind (D-036)
+│   # NB: the old monolithic 2_Loci_Extraction.py was retired 2026-06-20 (D-016);
+│   # its logic lives in src/ (extract_locus*, run_itsx, run_primer_extraction).
+│   # Sidebar order is set explicitly in app.py via st.navigation (D-031), NOT by filename number.
 ├── tests/
 │   ├── conftest.py
 │   ├── test_assembly_utils.py
 │   ├── test_blast_loci_utils.py  # MUST cover LXD-002 regression
 │   ├── test_itsx_utils.py        # MUST cover LXD-001 fixes
 │   ├── test_exonerate_utils.py   # parser/QC/build offline + binary-guarded E2E (D-008)
+│   ├── test_codon_prep_utils.py  # soft-mask/merge offline + binary-guarded E2E (D-022)
 │   └── fixtures/                 # verbatim exonerate 2.4.0 output + synthetic gene
-├── app.py                 # streamlit run app.py
+├── app.py                 # streamlit run app.py — Home page + explicit phase-grouped st.navigation (D-031)
 ├── pyproject.toml
 └── environment.yml
 ```
@@ -104,20 +120,49 @@ pytest tests/ -v --cov=phylofetch --cov-report=term-missing
 - `select_best_locus_group()` groups by `qseqid` first, picks highest-bitscore reference
 - Returns `(hsps, ref_accession)` tuple (not just list)
 
-## Extraction strategies (Run Extraction tab)
+### LXD-003 — ITSx on genome assemblies (itsx_utils.py)
+- HMMER `hmmscan` aborts on sequences > 100 kb; genome contigs are Mb-scale, so ITSx returned
+  no rDNA (exit 0 + empty). `run_itsx` now `chunk_long_contigs()` (> 90 kb → overlapping 20 kb
+  windows) before ITSx, de-dupes identical output regions, and returns rc=1 on the over-limit
+  signature. Overlap ≫ rDNA cistron, so no region is split. (2026-06-20)
 
-Three selectable strategies drive loci extraction:
+## Extraction strategies (now component pages, D-012/RM-007)
 
-1. **BLAST – PCR amplicon refs (relaxed)** — NCBI amplicon refs, skips the CDS completeness gate (`require_complete_cds=False`). Uses `blast_loci_utils.extract_from_hsps` (genomic amplicon, no frame guarantee — this is its primary, legitimate use).
-2. **Coding loci – Exonerate (frame-safe)** — `exonerate_utils.py`. tblastn/blastn narrows to the best contig, then Exonerate spliced alignment (`protein2genome` / `coding2genome`, auto-picked) refines exon/intron boundaries and yields a translatable, frame-checked CDS. ITSx still handles rDNA. Falls back to `extract_from_hsps` **with a frame-safety warning** when `exonerate` is not on PATH. Supersedes the old "BLAST – CDS / protein (strict)" path for coding CDS (D-008, addresses RM-002).
-3. **PCR Primers (in-silico PCR)** — `primer_utils.py`. Locate fwd+rev primer binding sites with `blastn-short` (IUPAC degenerate primers are expanded to concrete oligos first, D-009), pair them on the same contig with opposite strands, extract the amplicon between. No NCBI reference library needed — useful when accessions are missing or map poorly.
+As of 2026-06-20 the single "Run Extraction tab" was decomposed into standalone **component
+pages** chained by the **project manifest** (`metadata/project_manifest.json` → `workflow.steps`;
+see `project_manager`). Each extraction strategy is its own page; the **Workflow** page
+(`6_Workflow.py`) picks a named strategy and links the steps with live status. References are
+per-project (`<project>/references`, D-013) and extraction outputs are per-project
+(`<project>/results/loci/{per_strain,combined}`, D-015).
+
+1. **rDNA — ITSx** (`3_ITSx_rDNA.py`, `itsx_utils.py`). Extract ITS/ITS1/ITS2/LSU/SSU from
+   assemblies; no Exonerate. (`place_rdna_regions` / `combine_rdna_regions`.)
+2. **Coding loci — Exonerate (frame-safe)** (`4_Exonerate.py`, `exonerate_utils.py`).
+   tblastn/blastn narrows to the best contig, then Exonerate spliced alignment
+   (`protein2genome`/`coding2genome`, auto-picked) yields a translatable, frame-checked CDS.
+   A **relaxed BLAST amplicon** mode (`extract_locus`, `require_complete_cds=False`, genomic
+   amplicon, no frame guarantee — the former "PCR amplicon refs (relaxed)" strategy) is a
+   selectable toggle; the BLAST HSP path is also the automatic fallback when `exonerate` is not
+   on PATH (with a frame-safety warning). Also extracts an arbitrary **gene of interest**
+   (paste/upload ortholog). (D-008, addresses RM-002.) **Reference source** (D-020/D-023):
+   *Bundled guides* (universal Asco/Basidio protein core, default, no fetching) · *Bundled +
+   project library (taxon-closer)* (bundled guides plus the project's fetched protein refs in one
+   `protein2genome` query, best model wins) · *Project reference library* (only the fetched refs).
+   Fetched refs pass a **guide-length sanity filter** (D-025): refs whose length deviates >30% from
+   the curated bundled-guide length for the locus are dropped (mis-annotated/fused over-long models
+   — e.g. an 865-aa "partial β-tubulin" — out-score correct guides on identity); opt-out available,
+   bundled guides always remain.
+3. **PCR Primers (in-silico PCR)** (`5_Primers.py`, `primer_utils.py`). Locate fwd+rev primer
+   binding sites with `blastn-short` (IUPAC degenerate primers expanded to concrete oligos
+   first, D-009), pair on the same contig opposite strands, extract the amplicon between. No
+   NCBI reference library needed.
 
 ### Exonerate library (`exonerate_utils.py`) — D-008
 - **Hybrid pipeline**: `extract_locus_exonerate` narrows via `select_best_locus_group` to the single best contig (coords stay in contig space → no offset math), then runs Exonerate on that contig; `narrow=False` / no BLAST hit ⇒ whole-assembly run.
 - **Models**: `protein2genome` (protein query) / `coding2genome` (nucleotide CDS query), via `MODEL_FOR_QUERYTYPE` keyed on `detect_fasta_type`.
 - **Parsing**: `parse_exonerate_gff` reads verbatim `--showtargetgff yes` GFF (one result per `START…END OF GFF DUMP` block) + a `--ryo` line whose `%tcs` is the authoritative spliced CDS (cross-checked against the coord-rebuilt CDS). Exonerate emits introns + splice5/splice3 explicitly (no gap inference). `--bestn N` surfaces paralogs (`select_best_model` returns `(best, others)`).
-- **QC (RM-002)**: `validate_cds` reports reading-frame (`len % 3`), internal-stop count, translation; the per-locus log records a PASS/REVIEW verdict and GT-AG tally. Default = write-and-flag; `strict_qc=True` rejects internal-stop / frameshift CDS (D-007: don't silently drop partial/type seqs).
-- **Outputs**: `LOCUS_CDS/protein/genomic/introns.fasta`, `LOCUS.gff3`, `LOCUS_partition.nex`, `LOCUS_extraction.log` (GFF3 + partition writers reused from `blast_loci_utils`).
+- **QC (RM-002)**: `validate_cds` reports reading-frame (`len % 3`), internal-stop count, translation; the per-locus log records a PASS/REVIEW verdict and GT-AG tally. Default = write-and-flag; `strict_qc=True` rejects internal-stop / frameshift CDS (D-007: don't silently drop partial/type seqs). A frameshifted CDS auto-escalates `--refine` (keep cleanest) since Exonerate can misplace a splice boundary even when the genomic DNA is clean (D-030); the page shows a persistent PASS/REVIEW/DROPPED/FAILED summary so flagged strains never vanish. Escalation **caps at `region` by default** (`escalate_ceiling`) because `--refine full` re-runs exhaustive DP over the whole narrowed contig (minutes/strain, no observed benefit over region) — `full` is opt-in via the page's **Refinement effort** (Fast/Balanced/Thorough) and a **targeted deep-refine pass** (`scan_flagged_cds` → `--refine full` on just the flagged CDS, re-runnable any session, reuses `scratch/guides/`) (D-035).
+- **Outputs**: `LOCUS_CDS/protein/genomic/introns.fasta`, `LOCUS.gff3` (contig-relative) + `LOCUS_genomic.gff3` (region-relative, matches `LOCUS_genomic.fasta` for direct Geneious/IGV annotation, D-029), `LOCUS_partition.nex`, `LOCUS_extraction.log`, `exonerate_raw.txt` (raw tool log — **not** valid GFF, do not import; D-029). `LOCUS_genomic.fasta` is **soft-masked** — exons UPPERCASE / introns lowercase via `soft_mask_genomic` (D-022), the same annotation the Codon Tip Prep page applies to reference tips.
 - **Gene of interest**: the Run-Extraction page also accepts an arbitrary pasted/uploaded ortholog (protein or CDS) → returns just the CDS + exon model, sharing the same logged code path as catalogue loci.
 - **Provenance**: Exonerate runs route through RunManager (`run_exonerate`, `tool_version_keys=["exonerate"]`). Install via `conda install -c bioconda exonerate` (also pinned in `environment.yml`).
 

@@ -1,5 +1,5 @@
 """
-pages/3_Alignment_Prep.py
+pages/9_Alignment_Prep.py
 --------------------------
 Per-locus alignment, trimming, and supermatrix concatenation.
 
@@ -25,7 +25,7 @@ from phylofetch.alignment.macse import run_macse
 from phylofetch.alignment.mafft import run_mafft
 from phylofetch.alignment.trimal import run_trimal
 from phylofetch.config import load_config
-from phylofetch.project_manager import RunManager, load_json
+from phylofetch.project_manager import RunManager, load_json, project_output_dir
 
 st.set_page_config(
     page_title="Alignment Prep", page_icon="🔀", layout="wide"
@@ -65,12 +65,25 @@ with tab_align:
 
     col_in, col_opts = st.columns([2, 1])
     with col_in:
+        # Prefer the with_tips/ matrices (isolates + imported comparison taxa, from Codon Tip
+        # Prep) when they exist — they share the exact *_combined.fasta filenames of combined/
+        # (isolate-only), so defaulting to combined/ silently drops the reference taxa from the
+        # tree. Fall back to combined/ when no tips have been framed. (D-032)
+        _loci_root = project_output_dir(project_dir) / "loci"
+        _with_tips = _loci_root / "with_tips"
+        _default_align = (_with_tips if list(_with_tips.glob("*_combined.fasta"))
+                          else _loci_root / "combined")
         align_dir = st.text_input(
             "Directory containing combined FASTAs",
-            value=tp.get("output_base", str(Path.home() / "phylofetch_output")),
+            value=str(_default_align),
             key="align_dir",
-            help="FASTAs are files matching *_combined.fasta or any .fasta files you choose.",
+            help="Defaults to this project's `with_tips/` matrices (isolates + framed comparison "
+                 "tips) when present, else `combined/` (isolates only). FASTAs match "
+                 "*_combined.fasta or any .fasta files you choose.",
         )
+        if _default_align.name == "with_tips":
+            st.caption("🌳 Using **with_tips/** — isolates **plus** your imported comparison taxa. "
+                       "Switch the path to `…/loci/combined` for an isolate-only matrix.")
         if align_dir and Path(align_dir).is_dir():
             candidates = sorted(
                 list(Path(align_dir).rglob("*_combined.fasta"))
@@ -418,13 +431,17 @@ with tab_concat:
         else:
             selected_concat = []
 
-        codon_part_dir = st.text_input(
-            "Directory with codon partition files (optional)",
-            placeholder="/path/to/loci_dir/  (contains *_partition.nex files)",
-            key="codon_part_dir",
+        codon_partition = st.checkbox(
+            "Codon-partition CDS loci (1st / 2nd / 3rd positions)",
+            value=True,
+            key="codon_partition",
             help=(
-                "If Loci Extraction produced *_partition.nex files (codon-position partitions), "
-                "point here to merge them into the output nexus."
+                "Split each coding locus into three codon-position charsets, computed from the "
+                "aligned matrix coordinates (D-032). CDS loci are detected by `_CDS` in the "
+                "filename; rDNA / nucleotide loci get a single block. **Only valid if the CDS was "
+                "aligned frame-preserving** (codon-aware, e.g. MACSE, or proteins back-translated) "
+                "— a plain MAFFT nucleotide alignment can break frame, making codon positions "
+                "meaningless. Off → one partition block per locus."
             ),
         )
 
@@ -480,23 +497,19 @@ with tab_concat:
             out_fasta = out_path / f"{supermatrix_stem}.fasta"
             out_nex = out_path / f"{supermatrix_stem}_partitions.nex"
 
-            # Look for codon partition files
-            codon_parts = None
-            if codon_part_dir and Path(codon_part_dir).is_dir():
-                codon_parts = []
-                for fasta_path in selected_concat:
-                    stem = Path(fasta_path).stem.replace("_trimmed", "").replace(
-                        "_aligned", ""
-                    )
-                    nex_candidate = Path(codon_part_dir) / f"{stem}_partition.nex"
-                    codon_parts.append(str(nex_candidate))
+            # Codon-partition flags: a coding locus (CDS file) is split into 1st/2nd/3rd
+            # codon-position charsets from its aligned length (D-032). Detected by `_CDS` in
+            # the filename so rDNA / genomic / nucleotide-only matrices get a single block.
+            codon_loci = None
+            if codon_partition:
+                codon_loci = ["_CDS" in Path(p).stem for p in selected_concat]
 
             with st.spinner("Concatenating…"):
                 stats = concatenate_alignments(
                     aligned_fastas=selected_concat,
                     output_fasta=out_fasta,
                     partition_file=out_nex,
-                    codon_partition_files=codon_parts,
+                    codon_loci=codon_loci,
                     missing_char=missing_char,
                 )
 

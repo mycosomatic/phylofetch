@@ -21,12 +21,20 @@ from phylofetch.project_manager import (
     DEFAULT_PROJECT_DIR,
     DEFAULT_PROJECTS_ROOT,
     check_tools,
+    clear_global_reference_cache,
+    clear_project_data,
+    delete_project,
     init_project,
     list_projects,
     load_assembly_registry,
     load_json,
+    load_project_manifest,
+    project_data_summary,
+    project_output_dir,
+    reset_workflow,
     safe_slug,
     save_assembly_registry,
+    set_output_dir,
 )
 
 st.set_page_config(page_title="Project Setup", page_icon="⚙️", layout="wide")
@@ -47,8 +55,8 @@ def _persist_assemblies(assemblies: dict) -> None:
     save_assembly_registry(st.session_state.project_dir, assemblies)
 
 
-tab_proj, tab_tools, tab_history = st.tabs(
-    ["📂 Project", "🔧 Tool Status", "📋 Command History"]
+tab_proj, tab_data, tab_tools, tab_history = st.tabs(
+    ["📂 Project", "🧹 Manage Data", "🔧 Tool Status", "📋 Command History"]
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,7 +197,108 @@ with tab_proj:
         )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Tool Status
+# TAB 2 — Manage Data (clear caches / start fresh / delete project)
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_data:
+    project_dir = st.session_state.project_dir
+    st.subheader("Cached data for this project")
+    st.caption(f"`{project_dir}`")
+
+    summ = project_data_summary(project_dir)
+
+    def _mb(b: int) -> str:
+        return f"{b / 1e6:.1f} MB"
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Assemblies", summ["n_assemblies"])
+    m2.metric("Reference loci", summ["n_ref_loci"], _mb(summ["ref_bytes"]))
+    m3.metric("Combined FASTAs", summ["n_combined"], _mb(summ["results_bytes"]))
+    m4.metric("Run folders", summ["n_runs"], _mb(summ["runs_bytes"]))
+
+    st.markdown("---")
+    st.markdown("**Output directory** — where extraction/alignment artifacts are written "
+                "(portable to downstream tools). Blank = default `<project>/results`.")
+    _cur_override = load_project_manifest(project_dir).get("output_dir", "")
+    oc1, oc2 = st.columns([4, 1])
+    with oc1:
+        _new_out = st.text_input(
+            "Output directory", value=_cur_override,
+            placeholder=str(Path(project_dir) / "results"),
+            label_visibility="collapsed",
+            help="Set a custom path (e.g. a shared analysis folder) or leave blank for the "
+                 "per-project default. Alignment Prep reads from here by default.",
+        )
+    with oc2:
+        if st.button("💾 Save output dir"):
+            set_output_dir(project_dir, _new_out)
+            st.success("Saved."); st.rerun()
+    st.caption(f"Currently writing to: `{project_output_dir(project_dir)}`"
+               + ("  (default)" if not _cur_override else "  (custom)"))
+
+    st.markdown("---")
+    st.markdown("**Clear caches** — the project stays; assembly FASTA files on disk are untouched.")
+    st.caption("Use this to start fresh or after changing references: delete stale "
+               "references/results, then re-fetch and re-extract.")
+    confirm = st.checkbox("I understand these permanently delete cached files",
+                          key="data_confirm")
+
+    cc = st.columns(4)
+    with cc[0]:
+        if st.button("🧬 Clear references", disabled=not confirm, width="stretch"):
+            clear_project_data(project_dir, "references")
+            st.success("References cleared."); st.rerun()
+    with cc[1]:
+        if st.button("📦 Clear results", disabled=not confirm, width="stretch"):
+            clear_project_data(project_dir, "results")
+            st.success("Results cleared."); st.rerun()
+    with cc[2]:
+        if st.button("📋 Clear run logs", disabled=not confirm, width="stretch"):
+            clear_project_data(project_dir, "runs")
+            st.success("Run logs cleared."); st.rerun()
+    with cc[3]:
+        if st.button("♻️ Reset workflow", disabled=not confirm, width="stretch"):
+            reset_workflow(project_dir)
+            st.success("Workflow state reset."); st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Assemblies**")
+    ac1, ac2 = st.columns([1, 3])
+    with ac1:
+        if st.button("🗑️ Clear all assemblies", disabled=not confirm):
+            st.session_state.assemblies = {}
+            _persist_assemblies({})
+            st.success("Assembly registry cleared."); st.rerun()
+    with ac2:
+        st.caption("Removes every assembly from the registry (the FASTA files on disk are not "
+                   "deleted). Then import your new assemblies in the **Assembly Manager**.")
+
+    st.markdown("---")
+    with st.expander("🌐 Global reference cache (shared across projects)"):
+        st.caption("Legacy/shared library at `~/.phylofetch/references`. The workflow now uses "
+                   "per-project references (cleared above); this is only the old shared cache.")
+        if st.button("Clear global reference cache", disabled=not confirm):
+            existed = clear_global_reference_cache()
+            st.success("Global cache cleared." if existed else "Global cache was already empty.")
+
+    st.markdown("---")
+    with st.expander("⛔ Delete this entire project"):
+        st.warning(f"Permanently deletes the whole project directory:\n\n`{project_dir}`")
+        pname = Path(project_dir).name
+        typed = st.text_input(f"Type the project name (`{pname}`) to confirm")
+        if st.button("Delete project", type="primary", disabled=(typed.strip() != pname)):
+            try:
+                delete_project(project_dir)
+                st.session_state.project_dir = str(DEFAULT_PROJECT_DIR)
+                st.session_state.assemblies = {}
+                save_config({"project_dir": str(DEFAULT_PROJECT_DIR), "assemblies": {}})
+                st.success("Project deleted. Switched to the default workspace.")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Tool Status
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_tools:
     st.subheader("Tool availability")
@@ -241,7 +350,7 @@ with tab_tools:
             )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — Command History
+# TAB 4 — Command History
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
     project_dir = st.session_state.project_dir

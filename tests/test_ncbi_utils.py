@@ -33,7 +33,25 @@ from phylofetch.ncbi_utils import (
     parse_source_metadata,
     project_ref_dir,
     save_ref_meta,
+    taxon_fallbacks,
 )
+
+
+class TestTaxonFallbacks:
+    def test_species_falls_back_to_genus(self):
+        assert taxon_fallbacks("Alternaria eureka") == ["Alternaria eureka", "Alternaria"]
+
+    def test_aff_species_falls_back_to_genus(self):
+        # the novel-species case: 'aff.' name absent from NCBI -> genus fallback
+        assert taxon_fallbacks("Alternaria aff. eureka") == ["Alternaria aff. eureka", "Alternaria"]
+
+    def test_genus_only_no_duplicate(self):
+        assert taxon_fallbacks("Alternaria") == ["Alternaria"]
+
+    def test_whitespace_and_empty(self):
+        assert taxon_fallbacks("  Fusarium oxysporum ") == ["Fusarium oxysporum", "Fusarium"]
+        assert taxon_fallbacks("") == []
+        assert taxon_fallbacks("   ") == []
 
 
 # ── /type_material parsing ────────────────────────────────────────────────────
@@ -155,6 +173,20 @@ class TestBuildEntrezQuery:
         assert "complete cds" not in q.lower()
 
 
+class TestSummaryToDict:
+    def test_organism_parsed_from_title_when_absent(self):
+        import phylofetch.ncbi_utils as nu
+        d = nu._summary_to_dict({"Id": "1", "AccessionVersion": "XP_1.1", "Length": 458,
+                                 "Title": "elongation factor 1-alpha [Paraphaeosphaeria sp.]"})
+        assert d["organism"] == "Paraphaeosphaeria sp." and d["length"] == 458
+
+    def test_explicit_organism_field_wins(self):
+        import phylofetch.ncbi_utils as nu
+        d = nu._summary_to_dict({"AccessionVersion": "KC1.1", "Organism": "Alternaria alternata",
+                                 "Title": "...gene [unrelated bracket]"})
+        assert d["organism"] == "Alternaria alternata"
+
+
 class TestNcbiSearchCount:
     def test_returns_count_and_builds_query(self, monkeypatch):
         import phylofetch.ncbi_utils as nu
@@ -188,6 +220,24 @@ class TestNcbiSearchCount:
         monkeypatch.setattr(nu.Entrez, "read", lambda h: {"Count": "3"})
         assert nu.ncbi_search_count("rpb2", "Fungi", type_mode="type_only") == 3
         assert "sequence_from_type" in captured["term"].lower()
+
+    def test_refseq_only_adds_srcdb_filter(self, monkeypatch):
+        import phylofetch.ncbi_utils as nu
+        monkeypatch.setattr(nu, "_entrez_email", "x@y.z")
+        captured = {}
+
+        class _H:
+            def close(self):
+                pass
+
+        monkeypatch.setattr(nu.Entrez, "esearch",
+                            lambda db, term, retmax: captured.update(term=term) or _H())
+        monkeypatch.setattr(nu.Entrez, "read", lambda h: {"Count": "3"})
+        n = nu.ncbi_search_count("tef1", "Alternaria", db="protein",
+                                 field="Protein Name", refseq_only=True)
+        assert n == 3
+        assert "srcdb_refseq[prop]" in captured["term"]
+        assert "tef1[Protein Name]" in captured["term"]
 
 
 class TestLocusSearchTerms:

@@ -22,6 +22,7 @@ def concatenate_alignments(
     partition_file: str | Path,
     locus_names: list[str] | None = None,
     codon_partition_files: list[str | Path] | None = None,
+    codon_loci: list[bool] | None = None,
     missing_char: str = "-",
 ) -> dict:
     """
@@ -29,9 +30,16 @@ def concatenate_alignments(
 
     aligned_fastas: list of per-locus aligned FASTA paths (same taxa, possibly gapped)
     locus_names: optional display names; defaults to file stems
-    codon_partition_files: if provided, per-locus *_partition.nex files are merged
-                           into position-specific partition blocks in the output file.
-                           Otherwise, one block per locus is written.
+    codon_loci: if provided, a per-locus boolean flag (aligned with ``aligned_fastas``).
+                A True locus is split into three codon-position charsets computed from its
+                **aligned** length (``offset+1‥end\\3`` etc.); a False locus gets one block.
+                This is the correct way to partition codons in the concatenated matrix — it
+                uses the post-alignment coordinates, so it stays valid only when the CDS was
+                aligned frame-preserving (codon-aware, e.g. MACSE). (D-032)
+    codon_partition_files: legacy path — per-locus *_partition.nex files merged into
+                           position-specific blocks (offsets shifted). Superseded by
+                           ``codon_loci`` for combined matrices; kept for direct callers.
+                           Ignored when ``codon_loci`` is given.
     missing_char: character used to fill missing taxa in a locus (default '-')
 
     Returns a stats dict: {n_loci, n_taxa, total_sites, per_locus_sites, missing_taxa}
@@ -80,7 +88,9 @@ def concatenate_alignments(
     SeqIO.write(records, str(output_fasta), "fasta")
 
     # Build partition nexus
-    if codon_partition_files:
+    if codon_loci is not None and len(codon_loci) == len(fastas):
+        _write_aligned_codon_partitions(codon_loci, locus_lengths, names, partition_file)
+    elif codon_partition_files:
         _write_merged_codon_partitions(
             codon_partition_files, locus_lengths, names, partition_file
         )
@@ -106,6 +116,34 @@ def _write_locus_partitions(lengths: list[int], names: list[str],
         end = pos + length - 1
         lines.append(f"    charset {name} = {pos}-{end};")
         pos = end + 1
+    lines.append("end;")
+    Path(out_path).write_text("\n".join(lines) + "\n")
+
+
+def _write_aligned_codon_partitions(
+    flags: list[bool],
+    lengths: list[int],
+    names: list[str],
+    out_path: str | Path,
+) -> None:
+    """
+    Write partition blocks computed from the **aligned** supermatrix coordinates: a flagged
+    (coding) locus becomes three codon-position charsets (``offset+1‥end\\3`` …); an
+    unflagged locus (e.g. rDNA) becomes a single block. Unlike the legacy file-based path,
+    this needs no per-locus *_partition.nex on disk and uses the aligned length, so the
+    charset ends line up with the actual columns in the matrix. (D-032)
+    """
+    lines = ["#nexus", "begin sets;"]
+    offset = 0
+    for is_codon, length, name in zip(flags, lengths, names):
+        if is_codon and length >= 3:
+            end = offset + length
+            lines.append(f"    charset {name}_pos1 = {offset + 1}-{end}\\3;")
+            lines.append(f"    charset {name}_pos2 = {offset + 2}-{end}\\3;")
+            lines.append(f"    charset {name}_pos3 = {offset + 3}-{end}\\3;")
+        else:
+            lines.append(f"    charset {name} = {offset + 1}-{offset + length};")
+        offset += length
     lines.append("end;")
     Path(out_path).write_text("\n".join(lines) + "\n")
 

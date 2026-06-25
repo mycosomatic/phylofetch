@@ -32,6 +32,7 @@ from phylofetch.primer_utils import (
     delete_user_primer,
     expand_degenerate_primer,
     find_primer_amplicons,
+    find_primer_amplicons_escalating,
     extract_primer_amplicon,
     get_primer_catalogue,
     load_builtin_primers,
@@ -42,6 +43,51 @@ from phylofetch.primer_utils import (
 )
 
 HAS_BLASTN = shutil.which("blastn") is not None
+
+_PP = PrimerPair(name="x", locus="L", fwd="ACGT", rev="ACGT")
+
+
+class TestEscalatingSearch:
+    """Iterative edit-distance escalation: strict-first, loosen only if needed."""
+
+    def test_stops_at_first_threshold_with_hits(self, monkeypatch):
+        import phylofetch.primer_utils as pu
+        calls = []
+
+        def fake(asm, pair, max_mismatches=2, **kw):
+            calls.append(max_mismatches)
+            return [{"total_edit": max_mismatches}] if max_mismatches >= 3 else []
+
+        monkeypatch.setattr(pu, "find_primer_amplicons", fake)
+        cands, used = pu.find_primer_amplicons_escalating(
+            "a", _PP, start_mismatches=2, max_mismatches=4)
+        assert used == 3 and len(cands) == 1 and calls == [2, 3]   # didn't go to 4
+
+    def test_immediate_match_single_call(self, monkeypatch):
+        import phylofetch.primer_utils as pu
+        calls = []
+        monkeypatch.setattr(pu, "find_primer_amplicons",
+                            lambda *a, max_mismatches=2, **k: calls.append(max_mismatches) or [{"x": 1}])
+        cands, used = pu.find_primer_amplicons_escalating(
+            "a", _PP, start_mismatches=2, max_mismatches=4)
+        assert used == 2 and calls == [2]                          # no needless loosening
+
+    def test_no_hits_returns_cap(self, monkeypatch):
+        import phylofetch.primer_utils as pu
+        calls = []
+        monkeypatch.setattr(pu, "find_primer_amplicons",
+                            lambda *a, max_mismatches=2, **k: calls.append(max_mismatches) or [])
+        cands, used = pu.find_primer_amplicons_escalating(
+            "a", _PP, start_mismatches=2, max_mismatches=4)
+        assert cands == [] and used == 4 and calls == [2, 3, 4]
+
+    def test_start_clamped_to_cap(self, monkeypatch):
+        import phylofetch.primer_utils as pu
+        calls = []
+        monkeypatch.setattr(pu, "find_primer_amplicons",
+                            lambda *a, max_mismatches=2, **k: calls.append(max_mismatches) or [])
+        pu.find_primer_amplicons_escalating("a", _PP, start_mismatches=3, max_mismatches=1)
+        assert calls == [1]                                        # start clamped down to cap
 
 
 # ── Catalogue sanity checks ───────────────────────────────────────────────────

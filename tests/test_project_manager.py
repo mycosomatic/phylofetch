@@ -14,6 +14,8 @@ from phylofetch.project_manager import (
     PROJECT_MANIFEST_SCHEMA_VERSION,
     WORKFLOW_STEPS,
     _migrate_assembly_record,
+    clear_project_data,
+    delete_project,
     effective_taxon,
     get_workflow,
     init_project,
@@ -21,6 +23,10 @@ from phylofetch.project_manager import (
     load_assembly_registry,
     load_json,
     load_project_manifest,
+    project_data_summary,
+    project_output_dir,
+    reset_workflow,
+    set_output_dir,
     save_assembly_registry,
     save_json,
     set_assembly_taxon,
@@ -29,6 +35,86 @@ from phylofetch.project_manager import (
     set_workflow_strategy,
     update_step,
 )
+
+
+class TestOutputDir:
+    def test_default_is_project_results(self, tmp_path):
+        p = tmp_path / "proj"; init_project(p)
+        assert project_output_dir(p) == p / "results"
+
+    def test_set_and_clear_override(self, tmp_path):
+        p = tmp_path / "proj"; init_project(p)
+        custom = tmp_path / "shared" / "out"
+        set_output_dir(p, str(custom))
+        assert project_output_dir(p) == custom
+        set_output_dir(p, "")                       # blank reverts to default
+        assert project_output_dir(p) == p / "results"
+
+    def test_manifest_has_output_dir_default(self, tmp_path):
+        assert load_project_manifest(tmp_path / "ghost")["output_dir"] == ""
+
+    def test_summary_honours_override(self, tmp_path):
+        p = tmp_path / "proj"; init_project(p)
+        custom = tmp_path / "out"; set_output_dir(p, str(custom))
+        (custom / "loci" / "combined").mkdir(parents=True)
+        (custom / "loci" / "combined" / "ITS_combined.fasta").write_text(">x\nACGT\n")
+        s = project_data_summary(p)
+        assert s["n_combined"] == 1 and s["output_dir"] == str(custom)
+
+
+class TestProjectDataManagement:
+    def _proj(self, tmp_path):
+        p = tmp_path / "proj"
+        init_project(p)
+        (p / "references" / "ITS").mkdir(parents=True)
+        (p / "references" / "ITS" / "ITS_refs.fasta").write_text(">x\nACGT\n")
+        (p / "results" / "loci" / "combined").mkdir(parents=True)
+        (p / "results" / "loci" / "combined" / "ITS_combined.fasta").write_text(">x\nACGT\n")
+        (p / "runs" / "r1").mkdir(parents=True)
+        (p / "runs" / "r1" / "x.log").write_text("hi")
+        return p
+
+    def test_summary_counts(self, tmp_path):
+        s = project_data_summary(self._proj(tmp_path))
+        assert s["n_ref_loci"] == 1 and s["n_combined"] == 1 and s["n_runs"] == 1
+        assert s["ref_bytes"] > 0
+
+    def test_clear_references_recreates_empty(self, tmp_path):
+        p = self._proj(tmp_path)
+        assert clear_project_data(p, "references") is True
+        assert project_data_summary(p)["n_ref_loci"] == 0
+        assert (p / "references").exists()        # recreated empty, not just deleted
+
+    def test_clear_results_and_runs(self, tmp_path):
+        p = self._proj(tmp_path)
+        clear_project_data(p, "results")
+        clear_project_data(p, "runs")
+        s = project_data_summary(p)
+        assert s["n_combined"] == 0 and s["n_runs"] == 0
+
+    def test_clear_rejects_bad_subdir(self, tmp_path):
+        with pytest.raises(ValueError):
+            clear_project_data(self._proj(tmp_path), "metadata")
+
+    def test_clear_rejects_non_project(self, tmp_path):
+        with pytest.raises(ValueError):
+            clear_project_data(tmp_path / "nope", "references")
+
+    def test_reset_workflow(self, tmp_path):
+        p = self._proj(tmp_path)
+        update_step(p, "coding", status="done")
+        reset_workflow(p)
+        assert get_workflow(p)["steps"]["coding"]["status"] == "pending"
+
+    def test_delete_project(self, tmp_path):
+        p = self._proj(tmp_path)
+        assert delete_project(p) is True
+        assert not p.exists()
+
+    def test_delete_refuses_non_project(self, tmp_path):
+        (tmp_path / "plain").mkdir()
+        with pytest.raises(ValueError):
+            delete_project(tmp_path / "plain")
 
 
 # Two records exercising both schemas the app produces.
